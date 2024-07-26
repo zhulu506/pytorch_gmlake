@@ -8,7 +8,7 @@ import torch.utils._pytree as pytree
 from torch._inductor.kernel.mm_common import mm_args
 
 from . import ir
-from .codegen.cpp_gemm_template import CppPackedGemmTemplate
+from .codegen.cpp_gemm_template import CppGemmTemplate
 from .codegen.cpp_utils import create_epilogue_with_attr
 from .ir import TensorBox
 from .lowering import (
@@ -196,7 +196,7 @@ def register_onednn_fusion_ops():
                     )
                     if b is not None:
                         kwargs["input_indices"] = [2, 0, 1]  # type: ignore[assignment]
-                    CppPackedGemmTemplate.add_choices(
+                    CppGemmTemplate.add_choices(
                         choices,
                         layout,
                         [x, w] if b is None else [x, w, b],
@@ -258,7 +258,7 @@ def register_onednn_fusion_ops():
                         epilogue_creator=epilogue_creator,
                     )
                     kwargs["input_indices"] = [0, 2, 1] if b is None else [3, 0, 2, 1]
-                    CppPackedGemmTemplate.add_choices(
+                    CppGemmTemplate.add_choices(
                         choices,
                         layout,
                         [x, y, w] if b is None else [x, y, w, b],
@@ -690,7 +690,7 @@ def register_onednn_fusion_ops():
                         return output_buf
 
                     assert x.get_dtype() == torch.uint8
-                    CppPackedGemmTemplate.add_choices(
+                    CppGemmTemplate.add_choices(
                         choices,
                         layout,
                         [x, x_scale, x_zp, packed_weight, w_scale, w_zp]
@@ -986,7 +986,7 @@ def register_onednn_fusion_ops():
 
                         return output_buf
 
-                    CppPackedGemmTemplate.add_choices(
+                    CppGemmTemplate.add_choices(
                         choices,
                         layout,
                         [x, x_scale, x_zp, packed_weight, w_scale, w_zp, x2]
@@ -1071,7 +1071,7 @@ def register_onednn_fusion_ops():
                         x, transposed_w, layout=layout
                     )
                     if use_cpp_gemm_template(layout, x, transposed_w):
-                        CppPackedGemmTemplate.add_choices(
+                        CppGemmTemplate.add_choices(
                             choices,
                             layout,
                             [x, packed_w, orig_w],

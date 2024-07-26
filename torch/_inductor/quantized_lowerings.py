@@ -5,7 +5,7 @@ import torch
 from torch._inductor.kernel.mm_common import mm_args
 
 from . import config as inductor_config, lowering
-from .codegen.cpp_gemm_template import CppPackedGemmTemplate
+from .codegen.cpp_gemm_template import CppGemmTemplate
 from .codegen.cpp_utils import create_epilogue_with_attr
 from .lowering import expand, register_lowering
 from .select_algorithm import (
@@ -73,7 +73,7 @@ def register_woq_mm_ops() -> None:
             )
 
         if use_cpp_gemm_template(aten_layout, mat1, mat2, mat2_transposed=True):
-            CppPackedGemmTemplate.add_choices(
+            CppGemmTemplate.add_choices(
                 choices,
                 aten_layout,
                 [mat1, mat2, scale],
