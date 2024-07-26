@@ -13,7 +13,7 @@ from .select_algorithm import (
     ExternKernelChoice,
     realize_inputs,
 )
-from .utils import use_aten_gemm_kernels, use_cpp_packed_gemm_template
+from .utils import use_aten_gemm_kernels, use_cpp_gemm_template
 
 
 log = logging.getLogger(__name__)
@@ -72,7 +72,7 @@ def register_woq_mm_ops() -> None:
                 buf, "mul", other=realize_inputs(expand(scale, layout.size))
             )
 
-        if use_cpp_packed_gemm_template(aten_layout, mat1, mat2, mat2_transposed=True):
+        if use_cpp_gemm_template(aten_layout, mat1, mat2, mat2_transposed=True):
             CppPackedGemmTemplate.add_choices(
                 choices,
                 aten_layout,
