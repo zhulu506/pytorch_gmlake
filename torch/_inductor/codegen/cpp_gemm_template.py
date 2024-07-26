@@ -763,7 +763,7 @@ class CppGemmTemplate(CppTemplate):
             return cls.prep_weight(
                 normalize_shapes(maybe_to_dense(reorder_and_filter(inputs))),
                 micro_gemm,
-            )
+            ), layout
 
         def prune_tensors(input_nodes, new_input_nodes):
             def share_storage(base_tensor: torch.Tensor, comp_tensor: torch.Tensor):
