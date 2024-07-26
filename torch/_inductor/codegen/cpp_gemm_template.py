@@ -3,7 +3,7 @@ import contextlib
 import logging
 import math
 from functools import lru_cache
-from typing import Any, Callable, cast, Dict, List, Optional, Set, Union
+from typing import Any, Callable, cast, Dict, List, Optional, Set, Tuple, Union
 from unittest.mock import patch
 
 import torch
@@ -585,7 +585,7 @@ class CppGemmTemplate(CppTemplate):
         if input_indices is None:
             input_indices = list(range(len(input_nodes)))
 
-        def reorder_and_filter(inputs, layout_or_out):
+        def reorder_and_filter(inputs):
             if has_bias:
                 assert len(input_indices) >= 3
                 # Assume the input order is [inp, x, w] and we reorder it to [x, w, inp]
@@ -597,10 +597,10 @@ class CppGemmTemplate(CppTemplate):
                     inputs[w_idx],
                     inputs[inp_idx],
                     *[inputs[idx] for idx in input_indices[3:]],
-                ], layout_or_out
+                ]
             else:
                 assert len(input_indices) >= 2
-                return [inputs[idx] for idx in input_indices], layout_or_out
+                return [inputs[idx] for idx in input_indices]
 
         new_inputs, new_layout = reorder_and_filter(input_nodes, layout)
         assert new_inputs[1].get_name() in V.graph.constants
@@ -620,9 +620,11 @@ class CppGemmTemplate(CppTemplate):
             if isinstance(inputs[1], torch.Tensor):
                 W = inputs[1]
                 new_inputs[1] = W.to_dense() if W.is_mkldnn else W
-            return new_inputs, layout_or_out
+            return new_inputs
 
         def normalize_shapes(inputs, layout_or_out):
+            if not trans_w:
+                return inputs
             new_inputs = list(inputs)
             if not is_mkldnn_wgt and isinstance(new_inputs[1], torch.Tensor):
                 # With the assumptation that W is the storage of unwrap view
@@ -656,7 +658,7 @@ class CppGemmTemplate(CppTemplate):
             new_inputs[1] = W
             if B is not None:
                 new_inputs[2] = B
-            return new_inputs, layout_or_out
+            return new_inputs
 
         # TODO(jgong5): decide proper number of threads per problem size
         num_threads = parallel_num_threads()
@@ -759,7 +761,7 @@ class CppGemmTemplate(CppTemplate):
 
         def preprocessor(inputs, layout):
             return cls.prep_weight(
-                *normalize_shapes(*maybe_to_dense(*reorder_and_filter(inputs, layout))),
+                normalize_shapes(maybe_to_dense(reorder_and_filter(inputs))),
                 micro_gemm,
             )
 
@@ -875,10 +877,11 @@ class CppGemmTemplate(CppTemplate):
             new_size = [k, padded_n]
         return new_size, padded_n
 
-    
     @classmethod
-    def prep_weight(cls, inputs, layout_or_out, micro_gemm):
-        block_weight = cls == CppGemmTemplate or micro_gemm.get_b_layout() != LayoutType.NORMAL
+    def prep_weight(cls, inputs, micro_gemm):
+        block_weight = (
+            cls == CppGemmTemplate or micro_gemm.get_b_layout() != LayoutType.NORMAL
+        )
         W = inputs[1]
         if isinstance(W, ir.IRNode):
             k, n = W.get_size()[-2:]
@@ -927,7 +930,7 @@ class CppGemmTemplate(CppTemplate):
             else:
                 BCompensate = torch.sum(W.to_dense().to(torch.float), dim=0)  # type: ignore[assignment]
             new_inputs.append(BCompensate)
-        return new_inputs, layout_or_out
+        return new_inputs
 
     @staticmethod
     def block_weight_irnode(W, new_size, padding):
@@ -991,9 +994,7 @@ class CppGemmTemplate(CppTemplate):
         k = new_size[-2]
         if micro_gemm.get_b_layout() != LayoutType.NORMAL:
             layout_str = (
-                "VNNI4"
-                if micro_gemm.get_b_layout() == LayoutType.VNNI4
-                else "VNNI2"
+                "VNNI4" if micro_gemm.get_b_layout() == LayoutType.VNNI4 else "VNNI2"
             )
             assert micro_gemm.get_b_layout() in [
                 LayoutType.VNNI2,
@@ -1006,12 +1007,7 @@ class CppGemmTemplate(CppTemplate):
             vnni_view_size = list(new_size)
             vnni_view_size[-2] = k // vnni_size
             vnni_view_size.insert(-1, vnni_size)
-            W = (
-                W.view(vnni_view_size)
-                .transpose(-1, -2)
-                .contiguous()
-                .view(new_size)
-            )
+            W = W.view(vnni_view_size).transpose(-1, -2).contiguous().view(new_size)
         return W
 
     @classmethod
@@ -1051,7 +1047,7 @@ class CppGemmTemplate(CppTemplate):
         flag_template_buffer_has_other_users: Optional[bool] = None,
         epilogue_nodes: Optional[List[ir.IRNode]] = None,
         **kwargs,
-    ) -> Dict[str, Any]:
+    ) -> Tuple[Dict[str, Any], List[ir.Buffer]]:
         assert len(self.input_nodes) >= 2
 
         int8_gemm = self.input_nodes[0].get_dtype() == torch.uint8
