@@ -113,6 +113,13 @@ def do_bench_gpu(*args, **kwargs):
 
     triton_do_bench, quantile_field_name = load_triton()
 
+    benchmark_stream = torch.cuda.Stream()
+
+    with torch.cuda.stream(benchmark_stream):
+        timing = do_bench_cudagraph(*args, **kwargs)[0]
+    
+    return timing
+
     if quantile_field_name not in kwargs:
         kwargs[quantile_field_name] = (0.5, 0.2, 0.8)
     return triton_do_bench(*args, **kwargs)[0]
@@ -134,6 +141,84 @@ def do_bench_cpu(fn, warmup=5, times=20):
         return (sorted_durations[times // 2 - 1] + sorted_durations[times // 2]) / 2
     else:
         return sorted_durations[times // 2]
+
+
+def _summarize_statistics(times, quantiles, return_mode):
+    if quantiles is not None:
+        ret = torch.quantile(times, torch.tensor(quantiles, dtype=torch.float)).tolist()
+        if len(ret) == 1:
+            ret = ret[0]
+        return ret
+    return getattr(torch, return_mode)(times).item()
+
+
+def do_bench_cudagraph(fn, rep=20, grad_to_none=None, quantiles=None, return_mode="mean", **kwargs):
+    """
+    Benchmark the runtime of the provided function.
+
+    :param fn: Function to benchmark
+    :type fn: Callable
+    :param rep: Repetition time (in ms)
+    :type rep: int
+    :param grad_to_none: Reset the gradient of the provided tensor to None
+    :type grad_to_none: torch.tensor, optional
+    :param return_mode: The statistical measure to return. Options are "min", "max", "mean", or "median". Default is "mean".
+    :type return_mode: str
+    """
+    assert return_mode in ["min", "max", "mean", "median"]
+
+    if torch.cuda.current_stream() == torch.cuda.default_stream():
+        raise RuntimeError("Cannot capture graph in default stream. Please use side stream in benchmark code.")
+    # warmup
+    fn()
+    # step 1 - we estimate the amount of time the kernel call takes
+    # NOTE: this estimate isn't super accurate because the GPU isn't warmed up at this point
+    #       but it is probably good enough
+    if grad_to_none is not None:
+        for x in grad_to_none:
+            x.detach_()
+            x.requires_grad_(True)
+            x.grad = None
+    event_pairs = [
+        (
+            torch.cuda.Event(enable_timing=True),
+            torch.cuda.Event(enable_timing=True)
+        )
+        for _ in range(5)
+    ]
+    torch.cuda.synchronize()
+    for start_event, end_event in event_pairs:
+        start_event.record()
+        fn()
+        end_event.record()
+    torch.cuda.synchronize()
+    tt = 0
+    for start_event, end_event in event_pairs:
+        tt += start_event.elapsed_time(end_event)
+    estimate_ms = tt / 5
+    n_repeat = max(1, int(rep / estimate_ms))
+    # step 2 - construct a cuda graph with `n_repeat` unrolled function calls to minimize
+    # host overhead
+    g = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(g):
+        for _ in range(n_repeat):
+            if grad_to_none is not None:
+                for x in grad_to_none:
+                    x.grad = None
+            fn()
+    torch.cuda.synchronize()
+    # measure time and return
+    ret = []
+    n_retries = 10
+    for _ in range(n_retries):
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        start_event.record()
+        g.replay()
+        end_event.record()
+        torch.cuda.synchronize()
+        ret += [start_event.elapsed_time(end_event) / n_repeat]
+    return _summarize_statistics(torch.tensor(ret), quantiles, return_mode)
 
 
 def cache_dir() -> str:
