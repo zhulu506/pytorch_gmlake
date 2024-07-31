@@ -112,6 +112,8 @@ def do_bench_gpu(*args, **kwargs):
         )
 
     triton_do_bench, quantile_field_name = load_triton()
+    if quantile_field_name not in kwargs:
+        kwargs[quantile_field_name] = (0.5, 0.2, 0.8)
 
     benchmark_stream = torch.cuda.Stream()
 
@@ -120,8 +122,6 @@ def do_bench_gpu(*args, **kwargs):
     
     return timing
 
-    if quantile_field_name not in kwargs:
-        kwargs[quantile_field_name] = (0.5, 0.2, 0.8)
     return triton_do_bench(*args, **kwargs)[0]
 
 
