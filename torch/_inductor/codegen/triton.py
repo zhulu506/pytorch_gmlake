@@ -3074,6 +3074,11 @@ class TritonScheduling(SIMDScheduling):
             # TODO - would be better as a hook in triton do_bench that reset
             # the input values between benchmarking
             ms = ms - do_bench_gpu(lambda: wrapped_jit_function.clone_args(*args))
+        
+        gpu_launch_overhead_us = 5
+        gpu_launch_overhead_ms = gpu_launch_overhead_us / 1000
+
+        ms = ms + gpu_launch_overhead_ms
 
         log.debug(
             "The fused kernel for %s took %.3f ms to run",
