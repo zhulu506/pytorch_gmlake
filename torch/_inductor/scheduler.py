@@ -2141,12 +2141,9 @@ class Scheduler:
 
         why = WhyNoFuse(node1, node2)
 
-        gpu_launch_overhead_us = 5
-        gpu_launch_overhead_ms = gpu_launch_overhead_us / 1000
-
         def log_fusion(ms_fused: float, ms1: float, ms2: float) -> None:
             if fusion_log.isEnabledFor(logging.DEBUG):
-                if ms_fused < (ms1 + ms2 - gpu_launch_overhead_ms):
+                if ms_fused < ms1 + ms2:
                     fusion_log.debug(
                         "can fuse (benchmark): fusing %s with %s cause %sx speedup",
                         node1.get_buffer_names(),
@@ -2179,7 +2176,7 @@ class Scheduler:
                 if not isinstance(choice, torch._inductor.ir.TritonTemplateCallerBase):
                     continue
 
-                if unfused_time >= (ms1 + ms2 - gpu_launch_overhead_ms):
+                if unfused_time >= ms1 + ms2:
                     continue
 
                 triton_choices += 1
@@ -2228,7 +2225,7 @@ class Scheduler:
         log_fusion(ms_fused, ms1, ms2)
         if (
             is_metric_table_enabled("slow_fusion")
-            and ms_fused >= (ms1 + ms2 - gpu_launch_overhead_ms)
+            and ms_fused >= ms1 + ms2
             and (path1, path2) not in self.logged_slow_fusion
         ):
             self.logged_slow_fusion.add((path1, path2))
@@ -2240,10 +2237,10 @@ class Scheduler:
                     "kernel2_latency": ms2,
                     "fused_kernel_path": path_fused,
                     "fused_kernel_latency": ms_fused,
-                    "slow_down_ratio": ms_fused / (ms1 + ms2 - gpu_launch_overhead_ms),
+                    "slow_down_ratio": ms_fused / (ms1 + ms2),
                 }
             )
-        return ms_fused < (ms1 + ms2 - gpu_launch_overhead_ms)
+        return ms_fused < ms1 + ms2
 
     def fuse_nodes_once(
         self, nodes: List[BaseSchedulerNode]
