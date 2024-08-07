@@ -10676,6 +10676,30 @@ tensor([[[1.+1.j, 1.+1.j, 1.+1.j,  ..., 1.+1.j, 1.+1.j, 1.+1.j],
     def test_bf16_supported_on_cpu(self):
         self.assertFalse(torch.cuda.is_bf16_supported())
 
+    def test_c10_feature_enabled(self):
+        namespace = "movefast/knobs"
+        feature = "use_justknobs"
+        @contextlib.contextmanager
+        def mocksetting(v):
+            if IS_FBCODE:
+                from pyjk import PyPatchJustKnobs  # type: ignore[import]
+                with PyPatchJustKnobs().patch(f"{namespace}:{feature}", v):
+                    yield
+            else:
+                try:
+                    assert k not in os.environ
+                    os.environ[feature] = "1" if feature else "0"
+                    yield
+                finally:
+                    del os.environ[feature]
+
+        # check that an unset environment variable default is true
+        self.assertTrue(torch._C._c10_justknobs_check(namespace, feature, True))
+        with mocksetting(True):
+            self.assertTrue(torch._C._c10_justknobs_check(namespace, feature, True))
+        with mocksetting(False):
+            self.assertFalse(torch._C._c10_justknobs_check(namespace, feature, True))
+
 
 # The following block extends TestTorch with negative dim wrapping tests
 # FIXME: replace these with OpInfo sample inputs or systemic OpInfo tests
