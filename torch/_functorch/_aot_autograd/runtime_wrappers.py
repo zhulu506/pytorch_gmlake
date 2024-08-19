@@ -658,10 +658,14 @@ class EffectTokensWrapper(CompilerWrapper):
 
         @wraps(compiled_fn)
         def inner_fn(args: List[Any]):
-            if num_tokens > 0:
-                # Pass in effect tokens (See Note [Side-Effectful Tokens in AOTAutograd])
+            if num_tokens > 0 or runtime_metadata.num_backward_discovered_tokens > 0:
+                # Pass in forward effect tokens (See Note [Side-Effectful Tokens in AOTAutograd])
                 old_args = args
-                args = [*([None] * num_tokens), *args]
+                args = [
+                    *([None] * num_tokens),
+                    *args,
+                    *([None] * runtime_metadata.num_backward_discovered_tokens),
+                ]
                 old_args.clear()
 
             outs = compiled_fn(args)
@@ -1539,13 +1543,12 @@ To fix this, your tensor subclass must implement the dunder method __force_to_sa
                 tensors_saved_for_backwards = fw_outs[
                     CompiledFunction.metadata.tensors_saved_for_backwards_slice
                 ]
-                assert all(
-                    isinstance(x, torch.Tensor) for x in tensors_saved_for_backwards
-                )
                 # See Note [Detaching saved tensors in AOTAutograd]
+                # Saved value can be None in case of backward discovered effects token.
+                # See Note [Side-Effectful Tokens in AOTAutograd]
                 ctx.save_for_backward(
                     *(
-                        x.detach() if x._is_view() else x
+                        x if x is None else x.detach() if x._is_view() else x
                         for x in tensors_saved_for_backwards
                     )
                 )
@@ -1968,6 +1971,14 @@ To fix this, your tensor subclass must implement the dunder method __force_to_sa
                         steal_args=True,
                         disable_amp=disable_amp,
                     )
+
+                    # Toss out the backward output tokens
+                    num_bw_out_tokens = (
+                        CompiledFunction.metadata.num_backward_out_tokens
+                    )
+                    if num_bw_out_tokens > 0:
+                        out = out[:-num_bw_out_tokens]
+
                     # TODO: replace this with FunctionalizedRngRuntimeWrapper.post_compile
                     out = FunctionalizedRngRuntimeWrapper()._functionalized_rng_runtime_epilogue(
                         CompiledFunction.metadata, out, offset_index=len(out) - 1

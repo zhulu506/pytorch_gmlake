@@ -29,6 +29,7 @@ from torch.utils.checkpoint import CheckpointPolicy
 
 from . import config
 from ._aot_autograd.logging_utils import get_aot_graph_name
+from ._aot_autograd.utils import is_with_effects
 from .compile_utils import fx_graph_cse, get_aten_target
 
 
@@ -176,10 +177,8 @@ def _extract_graph_with_inputs_outputs(
         env[node] = new_node
 
     for node in joint_graph.nodes:
-        if (
-            node.meta.get("partitioner_tag", None) == "must_be_in_backward"
-            and subgraph != "backward"
-        ):
+        if _must_be_in_backward(node) and subgraph != "backward":
+            env[node] = InvalidNode
             continue
 
         if node in env:
@@ -249,6 +248,20 @@ def _is_fwd_seed_offset(node: fx.Node) -> bool:
 
 def _is_backward_state(node: fx.Node) -> bool:
     return node.op == "placeholder" and isinstance(node.meta.get("val"), BackwardState)
+
+
+def _hast_tag_is_backward(node: fx.Node) -> bool:
+    return node.meta.get("partitioner_tag", None) == "is_backward"
+
+
+def _hast_tag_must_be_in_backward(node: fx.Node) -> bool:
+    return node.meta.get("partitioner_tag", None) == "must_be_in_backward"
+
+
+def _must_be_in_backward(node: fx.Node) -> bool:
+    return _hast_tag_must_be_in_backward(node) or (
+        _hast_tag_is_backward(node) and is_with_effects(node)
+    )
 
 
 def _extract_fwd_bwd_outputs(
@@ -1734,6 +1747,9 @@ def min_cut_rematerialization_partition(
         for node in joint_module.graph.nodes:
             if node.op == "placeholder" and "tangents" in node.target:
                 required_bw_nodes.add(node)
+            elif _must_be_in_backward(node):
+                required_bw_nodes.add(node)
+
             if node in required_bw_nodes:
                 for user in node.users:
                     required_bw_nodes.add(user)
