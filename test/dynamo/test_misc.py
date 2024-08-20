@@ -3365,8 +3365,7 @@ utils_device.CURRENT_DEVICE == None""".split(
 
     def test_class_duner_flags(self):
         class ModuleA(torch.nn.ModuleDict, collections.abc.MutableMapping):
-            def __hash__(self):
-                return id(self)
+            pass
 
         def fn(x, mod_class):
             if mod_class.__flags__ & TPFLAGS_MAPPING:
