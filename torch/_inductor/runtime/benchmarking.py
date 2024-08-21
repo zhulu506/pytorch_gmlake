@@ -437,6 +437,7 @@ class InductorGroupedBenchmarker(InductorBenchmarker):
         memory_warmup_iters: int = 100,
         benchmark_iters: int = 100,
         max_benchmark_duration: int = 25,
+        ranking: bool = False,
         **kwargs: Any,
     ) -> List[float]:
         """Benchmark many GPU callables using a custom benchmarking implementation.
@@ -456,6 +457,13 @@ class InductorGroupedBenchmarker(InductorBenchmarker):
         the values of `memory_warmup_iters` and `benchmark_iters`, along with the
         estimated runtime of `_callable` and various other factors, and we then
         shrink `benchmark_iters` to fit in the alloted maximum duration.
+        - ranking: Optionally, exit benchmarking early and return the estimated
+        runtimes for each of the callables; essentially, skip the full benchmarking
+        stage. This mode is preferred when an accurate ranking of the kernels is
+        required but not accurate timings for each kernel. This mode should not be
+        used when benchmarking results will be cross-compared (i.e. in the case of
+        GEMM-Epilogue fusion benchmarking). Ranking is significantly (an order of
+        magnitude or more) faster than non-ranking.
         - **kwargs: Additional kwargs that may be passed to the fallback.
 
         Returns:
@@ -493,6 +501,17 @@ class InductorGroupedBenchmarker(InductorBenchmarker):
         estimated_timings = self.get_interleaved_min_timings_ms(
             interleaved_event_pairs
         )
+
+        if ranking:
+            feature_name = "inductor_grouped_benchmarker_ranking"
+            if is_feature_enabled(feature_name):
+                # explicitly delete the buffer, sometimes helps memory
+                # footprint metrics in OSS Inductor performance benchmarks
+                del buffer
+                return estimated_timings
+            else:
+                counters["inductor"]["benchmarking." + feature_name + ".disabled"] += 1
+                logger.debug("Feature %s is disabled, proceeding with full benchmarking cycle.", feature_name)
 
         # adjust `benchmark_iters` to fit in the maximum benchmarking duration, we're
         # alloted `max_benchmark_duration` per-callable, so we can just take the average
