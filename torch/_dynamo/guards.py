@@ -1829,19 +1829,20 @@ class GuardBuilder(GuardBuilderBase):
         for shape_guard in guards:
             self._set_guard_export_info(guard, [shape_guard])
 
-        if config.enable_cpp_guard_manager:
-            # Install all the symbolic guards in one lambda guard. These are run
-            # at the very end of the RootGuardManager via epilogue guards.
-            # TODO(anijain2305,williamwen42) - Consider moving this to C++.
-            code_parts = guards
-            self.add_python_lambda_leaf_guard_to_root(
-                code_parts,
-                get_verbose_code_parts(code_parts, guard),
-                closure_vars={**SYMPY_INTERP, **CLOSURE_VARS},
-            )
-        else:
-            for shape_guard in guards:
-                self._produce_guard_code(guard, [shape_guard], shape_env=True)
+        if not config.unsafe_skip_all_guards:
+            if config.enable_cpp_guard_manager:
+                # Install all the symbolic guards in one lambda guard. These are run
+                # at the very end of the RootGuardManager via epilogue guards.
+                # TODO(anijain2305,williamwen42) - Consider moving this to C++.
+                code_parts = guards
+                self.add_python_lambda_leaf_guard_to_root(
+                    code_parts,
+                    get_verbose_code_parts(code_parts, guard),
+                    closure_vars={**SYMPY_INTERP, **CLOSURE_VARS},
+                )
+            else:
+                for shape_guard in guards:
+                    self._produce_guard_code(guard, [shape_guard], shape_env=True)
 
     def TENSOR_MATCH(self, guard: Guard, value=None):
         # For FSDP modules, we can skip guards on nn module tensors because FSDP
@@ -2877,10 +2878,19 @@ def install_guard(*guards, skip=0):
     """
     from torch._guards import TracingContext
 
-    collect_debug_stack = guards_log.isEnabledFor(
-        logging.DEBUG
-    ) or verbose_guards_log.isEnabledFor(logging.DEBUG)
-    add = TracingContext.get().guards_context.dynamo_guards.add
-    for guard in guards:
-        assert isinstance(guard, Guard)
-        add(guard, collect_debug_stack=collect_debug_stack, skip=skip + 1)
+    if not config.unsafe_skip_all_guards:
+        collect_debug_stack = guards_log.isEnabledFor(
+            logging.DEBUG
+        ) or verbose_guards_log.isEnabledFor(logging.DEBUG)
+        add = TracingContext.get().guards_context.dynamo_guards.add
+        for guard in guards:
+            assert isinstance(guard, Guard)
+            add(guard, collect_debug_stack=collect_debug_stack, skip=skip + 1)
+    else:
+        torch._dynamo.utils.warn_once(
+            "torch._dynamo.config.unsafe_skip_all_guards is set to True. This will skip "
+            "adding any guard on the Dynamo graphs. This is unsafe and should only be used "
+            "for debugging purposes. Or when the user is sure that there is only one graph "
+            "and there are no more recompilations possible. Using it incorrectly can lead "
+            "to crashes or silent bugs."
+        )
