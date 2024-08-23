@@ -2301,6 +2301,7 @@ def compile(
     backend: _Union[str, _Callable] = "inductor",
     mode: _Union[str, None] = None,
     options: _Optional[_Dict[str, _Union[str, builtins.int, builtins.bool]]] = None,
+    dynamo_options: _Optional[_Dict[str, _Callable[..., _Any]]] = None,
     disable: builtins.bool = False,
 ) -> _Callable[_InputT, _RetT]: ...
 
@@ -2314,6 +2315,7 @@ def compile(
     backend: _Union[str, _Callable] = "inductor",
     mode: _Union[str, None] = None,
     options: _Optional[_Dict[str, _Union[str, builtins.int, builtins.bool]]] = None,
+    dynamo_options: _Optional[_Dict[str, _Callable[..., _Any]]] = None,
     disable: builtins.bool = False,
 ) -> _Callable[[_Callable[_InputT, _RetT]], _Callable[_InputT, _RetT]]: ...
 
@@ -2326,6 +2328,7 @@ def compile(
     backend: _Union[str, _Callable] = "inductor",
     mode: _Union[str, None] = None,
     options: _Optional[_Dict[str, _Union[str, builtins.int, builtins.bool]]] = None,
+    dynamo_options: _Optional[_Dict[str, _Callable[..., _Any]]] = None,
     disable: builtins.bool = False,
 ) -> _Union[
     _Callable[[_Callable[_InputT, _RetT]], _Callable[_InputT, _RetT]],
@@ -2406,6 +2409,8 @@ def compile(
         - `trace.graph_diagram` which will show you a picture of your graph after fusion
 
         - For inductor you can see the full list of configs that it supports by calling `torch._inductor.list_options()`
+
+       dynamo_options(dict): A dictionary of options to pass on to TorchDynamo mostly for experimentation (e.g., guard_filter_fn)
        disable (bool): Turn torch.compile() into a no-op for testing
 
     Example::
@@ -2432,6 +2437,7 @@ def compile(
                 backend=backend,
                 mode=mode,
                 options=options,
+                dynamo_options=dynamo_options,
                 disable=disable,
             )
 
@@ -2448,11 +2454,14 @@ def compile(
     else:
         backend = _TorchCompileWrapper(backend, mode, options, dynamic)
 
+    if dynamo_options is None:
+        dynamo_options = {}
     return torch._dynamo.optimize(
         backend=backend,
         nopython=fullgraph,
         dynamic=dynamic,
         disable=disable,
+        **dynamo_options,
     )(model)  # type: ignore[return-value]
 
 
