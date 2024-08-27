@@ -7,6 +7,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import copy
+import contextlib
 import math
 import os
 import subprocess
@@ -3587,7 +3588,8 @@ class TestComposability(TestCase):
             "hessian",
         ],
     )
-    def test_transforms_dont_support_saved_tensor_hooks(self, device, transform):
+    @parametrize("requires_grad", [True, False])
+    def test_stacked_grad_transforms_dont_support_saved_tensor_hooks(self, device, transform, requires_grad):
         def f(x):
             return torch.sin(x).sum()
 
@@ -3595,19 +3597,29 @@ class TestComposability(TestCase):
             with torch.autograd.graph.save_on_cpu():
                 return f(x)
 
-        x = torch.randn(3, device=device)
+        x = torch.randn(3, device=device, requires_grad=requires_grad)
 
-        if transform == "functionalize":
-            transform = functorch.experimental.functionalize
-        else:
-            transform = getattr(functorch, transform)
-        with self.assertRaisesRegex(RuntimeError, "saved tensor hooks"):
-            with torch.autograd.graph.save_on_cpu():
-                transform(f)(x)
+        for higher_order in (True, False):
+            maybe_expect_error = (
+                self.assertRaisesRegex(RuntimeError, "saved tensor hooks")
+                if higher_order or requires_grad
+                else contextlib.nullcontext()
+            )
+            if transform == "functionalize":
+                transform_fn = functorch.experimental.functionalize
+            else:
+                transform_fn = getattr(functorch, transform)
+            mb_higher_order_transform = (
+                (lambda x: transform_fn(transform_fn(x))) if higher_order else transform_fn
+            )
+            with maybe_expect_error:
+                with torch.autograd.graph.save_on_cpu():
+                    mb_higher_order_transform(f)(x)
 
-        with self.assertRaisesRegex(RuntimeError, "saved tensor hooks"):
-            transform(g)(x)
+            with maybe_expect_error:
+                mb_higher_order_transform(g)(x)
 
+    # TODO: update this
     def test_vjp_doesnt_support_saved_tensor_hooks(self, device):
         def f(x):
             return torch.sin(x).sum()
@@ -3623,6 +3635,50 @@ class TestComposability(TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "saved tensor hooks"):
             vjp(g, x)
+
+      def test_basic_checkpoint_with_grad(self, device):
+        counts = [0]
+
+        N_REPEAT = 4
+
+        def f(x):
+            counts[0] += 1
+            return x.sin().cos()
+
+        g = torch.func.checkpoint(f, use_reentrant=False)
+
+        def h(x):
+            for _ in range(N_REPEAT):
+                x = g(x)
+            return x.sum()
+
+        def h_ref(x):
+            for _ in range(N_REPEAT):
+                x = f(x)
+            return x.sum()
+
+        a = torch.rand(1024, 1024, requires_grad=False, device=device)
+
+        out = grad(h)(a)
+        self.assertEqual(counts[0], N_REPEAT * 2)
+        counts[0] = 0
+        out_ref = grad(h_ref)(a)
+        self.assertEqual(counts[0], N_REPEAT)
+        self.assertEqual(out, out_ref)
+
+        if "cuda" in device:
+            def get_peak_memory(fn):
+                torch.cuda.synchronize()
+                torch.cuda.reset_peak_memory_stats()
+                fn()
+                torch.cuda.synchronize()
+                return torch.cuda.max_memory_allocated()
+
+            mem_ref = get_peak_memory(lambda: grad(h)(a))
+            mem_ac = get_peak_memory(lambda: grad(h_ref)(a))
+
+            # This is wrong!
+            self.assertEqual(mem_ref, mem_ac)
 
     def test_jvp_supports_saved_tensor_hooks(self, device):
         def f(x):
