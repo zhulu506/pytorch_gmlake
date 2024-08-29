@@ -649,26 +649,34 @@ class AutogradFunctionVariable(VariableTracker):
 
         VariableTracker.visit(visit, (args, kwargs))
 
+        from torch._functorch.autograd_function import (
+            autograd_function_forward_rewritten,
+        )
+        from torch.autograd.function import _is_setup_context_defined
+
+        forward_fn = self.fn_cls.forward
+
+        is_setup_ctx_defined = _is_setup_context_defined(self.fn_cls.setup_context)
+        if is_setup_ctx_defined:
+            # If setup_context is defined, we generate a new forward function which includes
+            # the original forward and setup_context function, and trace the new forward function.
+            forward_fn = autograd_function_forward_rewritten(
+                self.fn_cls.forward, self.fn_cls.setup_context
+            )
+        else:
+            if torch._C._are_functorch_transforms_active():
+                raise RuntimeError(
+                    "In order to use an autograd.Function with functorch transforms "
+                    "(vmap, grad, jvp, jacrev, ...), it must override the setup_context "
+                    "staticmethod. For more details, please see "
+                    "https://pytorch.org/docs/main/notes/extending.func.html"
+                )
+
         if (
             requires_grad
             and torch.is_grad_enabled()
             and config.capture_autograd_function
         ):
-            from torch._functorch.autograd_function import (
-                autograd_function_forward_rewritten,
-            )
-            from torch.autograd.function import _is_setup_context_defined
-
-            forward_fn = self.fn_cls.forward
-
-            is_setup_ctx_defined = _is_setup_context_defined(self.fn_cls.setup_context)
-            if is_setup_ctx_defined:
-                # If setup_context is defined, we generate a new forward function which includes
-                # the original forward and setup_context function, and trace the new forward function.
-                forward_fn = autograd_function_forward_rewritten(
-                    self.fn_cls.forward, self.fn_cls.setup_context
-                )
-
             vjp_fn = self.fn_cls.vjp  # type: ignore[attr-defined]
             if vjp_fn is not torch.autograd.Function.vjp:
                 unimplemented("NYI - User defind vjp")
@@ -686,6 +694,7 @@ class AutogradFunctionVariable(VariableTracker):
                 )
 
             val = AutogradFunctionApplyVariable(
+                self.fn_cls,
                 forward_fn,
                 self.fn_cls.backward,
                 source,
@@ -710,7 +719,7 @@ class AutogradFunctionVariable(VariableTracker):
         else:
             source = None
 
-        fn = self.fn_cls.forward
+        fn = forward_fn
         ctx = AutogradFunctionContextVariable.create(tx, args, kwargs)
         args = [ctx, *args]
         if isinstance(fn, types.FunctionType):
@@ -993,6 +1002,12 @@ class GetAttrVariable(VariableTracker):
 
     def as_proxy(self):
         return GetAttrVariable.create_getattr_proxy(self.obj.as_proxy(), self.name)
+
+    def call_hasattr(self, tx: "InstructionTranslator", name: str):
+        if isinstance(self.obj, AutogradFunctionVariable) and self.name == "apply":
+            result = hasattr(self.obj.fn_cls.apply, name)
+            return variables.ConstantVariable.create(result)
+        super().call_hasattr(tx, name)
 
     def const_getattr(self, tx: "InstructionTranslator", name):
         if not isinstance(self.obj, variables.NNModuleVariable):

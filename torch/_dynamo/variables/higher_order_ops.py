@@ -1906,8 +1906,9 @@ class FlexAttentionHigherOrderVariable(TorchHigherOrderOperatorVariable):
 
 
 class AutogradFunctionApplyVariable(VariableTracker):
-    def __init__(self, fwd_graph, bwd_graph, parent_source, **kwargs) -> None:
+    def __init__(self, fn_cls, fwd_graph, bwd_graph, parent_source, **kwargs) -> None:
         super().__init__(**kwargs)
+        self.fn_cls = fn_cls
         self.fwd_graph = fwd_graph
         self.bwd_graph = bwd_graph
         self.parent_source = parent_source
@@ -1958,6 +1959,7 @@ class AutogradFunctionApplyVariable(VariableTracker):
         """
 
         prev_side_effects = tx.output.side_effects.clone()
+
         fwd_tracer = torch._dynamo.output_graph.SubgraphTracer(
             tx.output,
             parent=tx.output.current_tracer,
@@ -2062,8 +2064,13 @@ class AutogradFunctionApplyVariable(VariableTracker):
         non_differentiable_idx = []
         if ctx.non_differentiable is not None:
             non_differentiable_set = set(ctx.non_differentiable)
-            assert isinstance(fwd_out, variables.BaseListVariable)
-            for i, x in enumerate(fwd_out.items):
+            if isinstance(fwd_out, variables.TensorVariable):
+                fwd_out_list = [fwd_out]
+            elif isinstance(fwd_out, variables.BaseListVariable):
+                fwd_out_list = fwd_out.items
+            else:
+                raise AssertionError("fwd_out should be a tuple/list or a tensor")
+            for i, x in enumerate(fwd_out_list):
                 if (
                     isinstance(x, variables.TensorVariable)
                     and x.as_proxy() in non_differentiable_set
@@ -2169,6 +2176,11 @@ class AutogradFunctionApplyVariable(VariableTracker):
 
         tx.output.side_effects = prev_side_effects
 
+        from torch.autograd.function import _is_setup_context_defined
+
+        is_setup_ctx_defined = _is_setup_context_defined(self.fn_cls.setup_context)
+        generate_vmap_rule = self.fn_cls.generate_vmap_rule
+
         p_args = (
             fwd_node,
             bwd_node,
@@ -2192,6 +2204,8 @@ class AutogradFunctionApplyVariable(VariableTracker):
                 kwargs={
                     "args_tensor_mask": args_tensor_mask,
                     "non_differentiable_idx": non_differentiable_idx,
+                    "is_setup_ctx_defined": is_setup_ctx_defined,
+                    "generate_vmap_rule": generate_vmap_rule,
                 },
             ),
             example_value=example_value,
