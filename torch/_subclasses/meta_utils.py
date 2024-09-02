@@ -200,10 +200,14 @@ class MetaTensorDescriber:
             from torch.fx.experimental.sym_node import NestedIntNode
 
             if isinstance(x, torch.SymInt):
+                # TODO(soulitzer): investigate why sometimes we fail this assert
+                if not isinstance(x.node, NestedIntNode):
+                    print(x.node.creation_trace)
                 assert isinstance(x.node, NestedIntNode)
+
                 return MetaNestedIntDesc(
                     tensor=self.describe_tensor(x.node.get_tensor()),
-                    # Maybe we should not hardcode this
+                    # TODO(soulitzer): Maybe we should not hardcode this
                     attr="offsets",
                 )
             return None
@@ -212,7 +216,7 @@ class MetaTensorDescriber:
             stride=tuple(process(x) for x in t.stride()),
         )
 
-    def describe_storage(self, s: torch.UntypedStorage):
+    def describe_storage(self, s: torch.UntypedStorage, *, trace: bool = False):
         return MetaStorageDesc(
             id=self.get_storage_id(s),
             size=s.size(),
@@ -253,6 +257,8 @@ class MetaTensorDescriber:
             cached_metadata = uf.get_metadata(t)
             cached_max = cached_metadata.get("_max_seqlen", None)
             cached_min = cached_metadata.get("_min_seqlen", None)
+            # preemptively make a symbolic nested int for this tensor
+            # for now, still keep it ephemeral source?
 
         storage = None
         # NB: For compatibility, I default this to zero, as sometimes people
@@ -364,11 +370,6 @@ class MetaTensorDescriber:
             is_parameter=isinstance(t, torch.nn.Parameter),
             is_traceable_wrapper_subclass=is_traceable_wrapper_subclass_v,
             is_nested=is_nested,
-            nested_int=(
-                _tensor_symint_registry[t].node.nested_int()
-                if t in _tensor_symint_registry
-                else None
-            ),
             is_functional=is_functional,
             layout=layout,
             device=t.device,
@@ -566,7 +567,6 @@ class MetaTensorDesc:
         "functorch_stack",
         "autograd_meta_from",
         "data",
-        "nested_int",
     ]
 
     ctx: Optional[object] = None  # is_traceable_wrapper_subclass
@@ -848,31 +848,32 @@ class MetaConverter:
                 return (t.size, t.stride, t.storage_offset)
 
         def handle_union_find(t_descr, t_fake):
-            # print(shape_env)
             if shape_env is None:
+                # TODO(soulitzer): Can this happen? maybe add an assert?
                 return
-                # breakpoint()
-            union_find_id = t_descr.union_find_id
-            weak_prev = shape_env.union_find_id_map.get(union_find_id)
-            # Replicate the union find structure in the fake world
-            if weak_prev is None:
-                shape_env.union_find_id_map[union_find_id] = weakref.ref(t_fake)
-            else:
-                # Just use the global union_find is okay?
-                uf = torch.nested._internal.union_find.get_union_find()
-                if weak_prev() is not None:
-                    # TODO: when is this None?
-                    uf.merge(weak_prev(), t_fake)
+            uf = t_fake.fake_mode.fake_union_find
+            # Use an existing union find on real tensors as scaffolding to build
+            # the fake union find.
+            t = uf._tensor_int_map.get_opt_tensor(t_descr.union_find_id)
+            assert t is not None
+            uf.merge(t, t_fake)
 
-            # Replicate the metadata
-            uf = torch.nested._internal.union_find.get_union_find()
+            from torch._subclasses.fake_tensor import FakeTensor
+
             cached_metadata = uf.get_metadata(t_fake)
-            # TODO: we could instead use the hint to make this a real symint
-            # but should not be necessary for NestedTensors
+
+            # We didn't even need to rely on the descr to record the min/max
+            # because we can access the metadata directly from the union find
+            # TODO(soulitzer): check the guards here
+
             if t_descr.cached_max is not None:
                 import sympy
+
+                assert cached_metadata.get("_max_seqlen", None) is not None
                 src = torch._dynamo.source.UnionFindMetadataSource(source, "_max_seqlen")
-                ret = shape_env.create_symintnode(
+                # TODO(soulitzer): think about how we can refactor the existing
+                # workaround logic.
+                cached_metadata["_max_seqlen"] = shape_env.create_symintnode(
                     sym=shape_env.create_symbol(
                         val=t_descr.cached_max,
                         source=src,
@@ -880,10 +881,10 @@ class MetaConverter:
                     hint=t_descr.cached_max,
                     source=src,
                 )
-                cached_metadata["_max_seqlen"] = ret
             if t_descr.cached_min is not None:
-                # TODO:
                 import sympy
+
+                assert cached_metadata.get("_min_seqlen", None) is not None
                 cached_metadata["_min_seqlen"] = shape_env.create_symintnode(
                     sym=sympy.Integer(t_descr.cached_min),
                     hint=t_descr.cached_min,
@@ -971,7 +972,9 @@ class MetaConverter:
                     inner_tensors[attr] = new_empty_tensor
 
                 for attr, inner_t in t.attrs.items():
-                    handle_union_find(inner_t, transformed_tensors_dict[attr])
+                    if inner_t.union_find_id is not None:
+                    # TODO(soulitzer): we go into this path for ALL subclasses
+                        handle_union_find(inner_t, inner_tensors[attr])
 
                 return t.type.__tensor_unflatten__(
                     inner_tensors, t.ctx, outer_size, outer_stride
@@ -1697,14 +1700,15 @@ class MetaConverter:
                 r._is_param = True
 
             # See Note: [Creating symbolic nested int]
-            if t.nested_int is not None:
+            if t.union_find_id is not None:
                 r.nested_int_memo = r.fake_mode.create_symbolic_nested_int(
-                    nt_tensor_id=t.nested_int
+                    fake_tensor=r,
                 )
 
             self.set_tensor_memo(t, r)
 
-            handle_union_find(t, r)
+            if t.union_find_id is not None:
+                handle_union_find(t, r)
 
         return self.get_tensor_memo(t)
 
@@ -1797,4 +1801,4 @@ class MetaConverter:
         return r
 
 
-import torch._prims_common as utils
+import torch._prims_common as util

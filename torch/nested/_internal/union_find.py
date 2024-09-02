@@ -1,3 +1,4 @@
+import contextlib
 import weakref
 
 import torch
@@ -73,6 +74,12 @@ class UnionFind:
         self.parent[b] = a
         self.size[a] += self.size[b]
 
+    # TODO(soulitzer): what does the default copy do?
+    def copy(self):
+        uf = UnionFind()
+        uf.parent = self.parent.copy()
+        uf.size = self.size.copy()
+        return uf
 
 class TensorIntMap:
     # Assigns Tensor objects to unique ints in an incrementing fashion.
@@ -110,30 +117,58 @@ class TensorIntMap:
             return None
         return mb_t
 
+    # Used during fakification
+    def replace(self, old_tensor, new_tensor):
+        old_int = self.get_int(old_tensor)
+        self._tensor_to_int_and_version[new_tensor] = (old_int, new_tensor._version)
+        self._int_to_tensor[old_int] = weakref.ref(new_tensor)
+
     def is_registered(self, t):
         return t in self._tensor_to_int_and_version
+
+    def copy(self):
+        new_map = TensorIntMap()
+        new_map._incrementing_id = self._incrementing_id
+        new_map._tensor_to_int_and_version = self._tensor_to_int_and_version.copy()
+        new_map._int_to_tensor = self._int_to_tensor.copy()
+        return new_map
+
+
+def _get_union_find(x):
+    from torch._subclasses.fake_tensor import FakeTensor
+    from torch._subclasses.functional_tensor import mb_unwrap_functional_tensor
+
+    # NB: Only FakeTensor is associated with a memo
+    tensor = mb_unwrap_functional_tensor(x)
+    if isinstance(tensor, FakeTensor):
+        return tensor.fake_mode.fake_union_find
+    return get_union_find()
 
 
 lib = torch.library.Library("nested", "FRAGMENT")
 
-lib.define("find(Tensor x) -> Tensor")
+lib.define("is_same_set(Tensor x, Tensor y) -> bool")
 
-def find_impl(a):
-    uf = get_union_find()
-    return uf.find(a)
+def is_same_set_impl(a, b):
+    uf_a = _get_union_find(a)
+    uf_b = _get_union_find(b)
+    assert uf_a == uf_b
+    return uf_a.find(a) is uf_a.find(a)
 
-lib.impl("find", find_impl, "CPU")
-lib.impl("find", find_impl, "CUDA")
-lib.impl("find", find_impl, "Meta")
+lib.impl("is_same_set", is_same_set_impl, "CPU")
+lib.impl("is_same_set", is_same_set_impl, "CUDA")
+lib.impl("is_same_set", is_same_set_impl, "Meta")
 
-def find(a):
-    return torch.ops.nested.find(a)
+def is_same_set(a, b):
+    return torch.ops.nested.is_same_set(a, b)
 
 lib.define("merge(Tensor x, Tensor x) -> ()")
 
 def merge_impl(a, b):
-    uf = get_union_find()
-    uf.merge(a, b)
+    uf_a = _get_union_find(a)
+    uf_b = _get_union_find(a)
+    assert uf_a == uf_b
+    uf_a.merge(a, b)
 
 lib.impl("merge", merge_impl, "CPU")
 lib.impl("merge", merge_impl, "CUDA")
@@ -145,10 +180,8 @@ def merge(a, b):
 lib.define("get_max_seqlen(Tensor x) -> SymInt")
 
 def get_max_seqlen_impl(x):
-    uf = get_union_find()
+    uf = _get_union_find(x)
     cached_metadata = uf.get_metadata(x)
-    if not cached_metadata.get("_max_seqlen"):
-        cached_metadata["_max_seqlen"] = torch.max(x.diff()).item()
     return cached_metadata["_max_seqlen"]
 
 lib.impl("get_max_seqlen", get_max_seqlen_impl, "CPU")
@@ -163,9 +196,7 @@ class TensorUnionFind:
     def __init__(self, tensor_int_map=None):
         # TensorUnionFind is a wrapper around UnionFind on ints
         self._union_find_int = UnionFind()
-        self._tensor_int_map = (
-            tensor_int_map if tensor_int_map is not None else TensorIntMap()
-        )
+        self._tensor_int_map = TensorIntMap()
         # 1) Maintains a metadata dict object for each set (see note
         #   "Storing metadata on canonical entries")
         self._metadata: Dict[int, Dict[Any, Any]] = DefaultDict(dict)
@@ -251,7 +282,19 @@ class TensorUnionFind:
                 return f"{id(t)}:{str(t.__class__)}:{t.device}"
             print(fn(mb_t), fn(self.find(mb_t)))
 
+    def copy(self):
+        new_uf = TensorUnionFind()
+        new_uf._tensor_int_map = self._tensor_int_map.copy()
+        new_uf._union_find_int = self._union_find_int.copy()
+        new_uf._metadata = DefaultDict(
+            self._metadata.default_factory,  # Preserves the default factory of the original defaultdict
+            {k: (new_uf._INVALID_ENTRY if v is self._INVALID_ENTRY else v.copy()) for (k, v) in self._metadata.items()}
+        )
+        new_uf._equiv_sets = self._equiv_sets.copy()
+        return new_uf
+
 _union_find = None
+
 def get_union_find():
     global _union_find
     if _union_find is None:
