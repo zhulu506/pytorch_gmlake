@@ -54,7 +54,7 @@ from typing import (
     Union,
     ValuesView,
 )
-from typing_extensions import Literal, TypeGuard
+from typing_extensions import Literal, TypeIs
 
 import torch
 import torch._functorch.config
@@ -116,7 +116,7 @@ except ImportError:
     pass
 
 
-T = TypeVar("T")
+_T = TypeVar("_T")
 
 unpatched_nn_module_getattr = torch.nn.Module.__getattr__
 
@@ -554,14 +554,14 @@ class ExactWeakKeyDictionary:
 
 
 @overload
-def istype(obj: object, allowed_types: Type[T]) -> TypeGuard[T]:
+def istype(obj: object, allowed_types: Type[_T]) -> TypeIs[_T]:
     ...
 
 
 @overload
 def istype(
-    obj: object, allowed_types: Tuple[Type[List[T]], Type[Tuple[T, ...]]]
-) -> TypeGuard[T]:
+    obj: object, allowed_types: Tuple[Type[List[_T]], Type[Tuple[_T, ...]]]
+) -> TypeIs[_T]:
     ...
 
 
