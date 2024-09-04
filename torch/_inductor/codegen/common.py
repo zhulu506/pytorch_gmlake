@@ -212,6 +212,7 @@ def init_backend_registration():
     from .cpp import CppScheduling
     from .cpp_wrapper_cpu import CppWrapperCpu
     from .cpp_wrapper_cuda import CppWrapperCuda
+    from .cpp_wrapper_xpu import CppWrapperXpu
     from .cuda_combined_scheduling import CUDACombinedScheduling
     from .halide import HalideScheduling
     from .triton import TritonScheduling
@@ -241,6 +242,7 @@ def init_backend_registration():
             "xpu",
             TritonScheduling,
             WrapperCodeGen,
+            CppWrapperXpu,
         )
 
     private_backend = torch._C._get_privateuse1_backend_name()
