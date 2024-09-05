@@ -46,6 +46,13 @@ at::Tensor PySavedVariableHooks::call_unpack_hook() {
   // unpack_hook_ will be manually decrefed when the saved variable is released
 }
 
+void PySavedVariableHooks::compiled_args(
+    torch::dynamo::autograd::CompiledNodeArgs& args,
+    const SavedVariable& sv,
+    const std::shared_ptr<torch::dynamo::autograd::VariableMetadata>& meta) {
+  args.collect(sv, unpack_hook_, data_, meta);
+}
+
 // NOLINTNEXTLINE(bugprone-exception-escape)
 PySavedVariableHooks::~PySavedVariableHooks() {
   // If python is already dead, leak the wrapped python objects

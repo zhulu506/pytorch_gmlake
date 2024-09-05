@@ -9,6 +9,11 @@
 #include <cstdint>
 #include <memory>
 
+namespace torch::dynamo::autograd {
+class CompiledNodeArgs;
+struct VariableMetadata;
+} // namespace torch::dynamo::autograd
+
 namespace torch::autograd {
 
 using Variable = at::Tensor;
@@ -50,6 +55,8 @@ class TORCH_API SavedVariable {
   bool has_hooks() const {
     return (bool)hooks_;
   }
+
+  void compiled_args(dynamo::autograd::CompiledNodeArgs& args) const;
 
  private:
   // This field contains either:
@@ -110,6 +117,9 @@ class TORCH_API SavedVariable {
   // saves an intermediate.
   std::shared_ptr<Node> grad_accumulator_;
   bool requires_grad_ = false;
+
+  // Metadata needed for compiled autograd to construct the unpacked variable
+  std::shared_ptr<torch::dynamo::autograd::VariableMetadata> original_metadata_;
 
   void save_metadata(const Variable& data);
   static std::unique_ptr<SavedVariableHooks> get_default_hooks();

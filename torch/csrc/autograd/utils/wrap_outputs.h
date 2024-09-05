@@ -36,6 +36,10 @@ inline PyObject* wrap(int64_t value) {
   return THPUtils_packInt64(value);
 }
 
+inline PyObject* wrap(uint64_t value) {
+  return THPUtils_packUInt64(value);
+}
+
 inline PyObject* wrap(double value) {
   return PyFloat_FromDouble(value);
 }

@@ -1,8 +1,10 @@
 #include <torch/csrc/dynamo/python_compiled_autograd.h>
 
+#include <torch/csrc/PyInterpreter.h>
 #include <torch/csrc/autograd/engine.h>
 #include <torch/csrc/autograd/functions/accumulate_grad.h>
 #include <torch/csrc/autograd/python_function.h>
+#include <torch/csrc/autograd/utils/wrap_outputs.h>
 #include <torch/csrc/dynamo/compiled_autograd.h>
 #include <torch/csrc/jit/python/pybind_utils.h>
 #include <torch/csrc/python_headers.h>
@@ -100,6 +102,11 @@ struct VerboseLogger {
     check(PyObject_CallFunction(python_verbose_logger, "s", msg.data()));
   }
 
+  void verbose_log_fn(PyObject* o) const {
+    TORCH_CHECK(python_verbose_logger != nullptr);
+    check(PyObject_CallFunction(python_verbose_logger, "O", o));
+  }
+
   void log_node_check(
       const Node& fn,
       size_t size_inputs_num,
@@ -160,6 +167,48 @@ struct VerboseLogger {
   // only log cache miss due to node key once
   bool logged_node_miss = false;
 };
+
+size_t CompiledNodeArgs::add_unpack_hook(PyObject* obj) {
+  return _compiler.emplace_hook_with_dedup(obj);
+}
+
+void CompiledNodeArgs::collect(
+    const SavedVariable& sv,
+    PyObject* unpack_hook,
+    PyObject* hook_input,
+    const std::shared_ptr<VariableMetadata>& meta) {
+  TORCH_CHECK(
+      THPVariable_Check(hook_input),
+      "Saved tensor pack hooks returning non-tensors not supported yet for compiled autograd");
+  size_t hook_id = add_unpack_hook(unpack_hook);
+  collect(hook_id);
+  collect(_compiler.tensor_args.add(sv, hook_input, hook_id, meta));
+}
+
+size_t AutogradCompilerCall::emplace_hook_with_dedup(PyObject* fn) {
+  if (auto it = dedup_hook_lookup.find(fn); it != dedup_hook_lookup.end()) {
+    return it->second;
+  }
+
+  Py_INCREF(fn);
+  auto obj = c10::SafePyObject(fn, getPyInterpreter());
+  size_t idx = emplace_hook(std::move(obj));
+  dedup_hook_lookup.emplace(fn, idx);
+  return idx;
+}
+
+TensorArg& TensorArgs::add(
+    const SavedVariable& sv,
+    PyObject* hook_input,
+    size_t hook_id,
+    const std::shared_ptr<VariableMetadata>& metadata) {
+  auto hook_input_tensor = THPVariable_Unpack(hook_input);
+  TensorArg& arg = add(hook_input_tensor);
+  TORCH_INTERNAL_ASSERT(metadata != nullptr);
+  unpack_hook_infos.emplace_back(UnpackHookMetadata{hook_id, *metadata});
+  _saved_variables.emplace(&sv, &arg);
+  return arg;
+}
 
 struct CacheNode {
   // A node in the shadow graph, we follow next edges until we reach the end of
@@ -406,6 +455,27 @@ void set_ivalue_proxies(
   }
 }
 
+PyObject* wrap_unpack_hook_info(const TensorArgs& tensor_args) {
+  const auto& infos = tensor_args.unpack_hook_infos;
+  PyObject* pyinfos = PyTuple_New(static_cast<Py_ssize_t>(infos.size()));
+  for (const auto i : c10::irange(infos.size())) {
+    const auto& info = infos[i];
+    auto sizes = asIntArrayRefSlowOpt(info.output_info.symsizes);
+    TORCH_INTERNAL_ASSERT(
+        sizes.has_value(),
+        "Unbacked symbolic shapes not supported for compiled autograd");
+    PyObject* pyinfo = PyTuple_Pack(
+        5,
+        autograd::utils::wrap(static_cast<uint64_t>(info.hook_id)),
+        autograd::utils::wrap(info.output_info.layout),
+        THPDevice_New(info.output_info.device),
+        autograd::utils::wrap(info.output_info.dtype),
+        autograd::utils::wrap(sizes.value()));
+    PyTuple_SET_ITEM(pyinfos, i, pyinfo);
+  }
+  return pyinfos;
+}
+
 static TraceState call_begin_capture(
     PyObject* self,
     CacheNode& cache,
@@ -416,12 +486,15 @@ static TraceState call_begin_capture(
   THPObjectPtr pysizeinput(cache.wrap_dynamic_inputs());
   THPObjectPtr pyivalueargsinput(
       wrap_lifted_ivalue_args(compiler_call.lifted_ivalue_args.args));
+  THPObjectPtr py_unpack_hook_info_input(
+      wrap_unpack_hook_info(compiler_call.tensor_args));
   THPObjectPtr pyresult(check(PyObject_CallMethodObjArgs(
       self,
       method_name,
       pyinput.get(),
       pysizeinput.get(),
       pyivalueargsinput.get(),
+      py_unpack_hook_info_input.get(),
       nullptr)));
 
   PyObject *fake_inputs{nullptr}, *fake_sizes{nullptr},

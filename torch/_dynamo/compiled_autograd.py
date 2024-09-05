@@ -44,7 +44,7 @@ def snapshot_verbose_logging_enabled():
     )
 
 
-def cpp_verbose_log_fn(msg: str) -> None:
+def cpp_verbose_log_fn(msg: Any) -> None:
     verbose_log.debug(msg)
 
 
@@ -87,6 +87,7 @@ class AutogradCompilerInstance:
         inputs: List[torch.Tensor],
         sizes: List[int],
         scalars: List[Union[int, float]],
+        unpack_hook_infos: List[int],
     ):
         counters["compiled_autograd"]["captures"] += 1
         self.aot_graph_cls_name: Optional[str] = None
@@ -139,12 +140,26 @@ class AutogradCompilerInstance:
                 raise AssertionError("Unexpected scalar type: ", type(val))
         self.bind_tensors_to_proxies(scalars, scalars_proxy)
 
+        def pack(x):
+            return x
+
+        next_unpack_hook_idx = 0
+
+        def unpack(x):
+            nonlocal next_unpack_hook_idx
+            proxy = self.proxy_call_unpack_hook(
+                x, unpack_hook_infos[next_unpack_hook_idx]
+            )
+            next_unpack_hook_idx += 1
+            return proxy
+
         # TODO(jansel): are all these modes needed?
         self.stack.enter_context(decompose({}))
         self.stack.enter_context(self.fake_tensor_mode)
         self.stack.enter_context(self.proxy_mode)
         self.stack.enter_context(disable_autocast_cache())
         self.stack.enter_context(preserve_node_meta())
+        self.stack.enter_context(torch.autograd.graph.saved_tensors_hooks(pack, unpack))
         return inputs, sizes, scalars
 
     def proxy_call_backward(
@@ -181,6 +196,20 @@ class AutogradCompilerInstance:
                 )
             self.bind_tensors_to_proxies(grad_ins, proxies)
         return tuple(grad_ins)
+
+    def proxy_call_unpack_hook(self, hook_input, hook_info):
+        hook_id, layout, device, dtype, symsize = hook_info
+        hook = self.hooks_proxy[hook_id]  # type: ignore[index]
+        proxy = self.proxy_call_hook(
+            hook,
+            hook_input,
+            hook_type="unpack_hook",
+        )
+        with disable_proxy_modes_tracing():
+            out = torch.empty(size=symsize, dtype=dtype, layout=layout, device=device)
+            graph = self.fx_tracer.graph
+            self.bind_tensors_to_proxies([out], [proxy])
+        return out
 
     def proxy_call_hook(self, hook, *args, **kwargs):
         return self.fx_tracer.create_proxy(

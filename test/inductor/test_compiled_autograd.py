@@ -2480,9 +2480,7 @@ TORCH_LIBRARY(test_cudagraphs_cpu_scalar_used_in_cpp_custom_op, m) {
 
         self.assertEqual(sum(1 for e in unexpected_logs if e in logs.getvalue()), 0)
 
-    @unittest.expectedFailure
     def test_saved_tensor_unpack_hook_ordering(self):
-        # not the correct behaviour, I'm just preventing this from changing silently
         def f(x, y):
             return x * y
 
@@ -2500,8 +2498,6 @@ TORCH_LIBRARY(test_cudagraphs_cpu_scalar_used_in_cpp_custom_op, m) {
             return x
 
         def tensor_hook(_):
-            # in eager, tensor_hook is fired before unpack_hook
-            # but in compiled autograd, tensor_hook is lifted whereas unpack_hook is not
             self.assertEqual(unpack_count, 0)
 
         x = torch.ones(4, requires_grad=True)
@@ -2518,6 +2514,34 @@ TORCH_LIBRARY(test_cudagraphs_cpu_scalar_used_in_cpp_custom_op, m) {
             self.assertEqual(pack_count, 1)
             self.assertEqual(unpack_count, 1)
 
+    def test_compiled_unpack_hooks_exec_count(self):
+        def fn():
+            pack_count = 0
+            unpack_count = 0
+
+            def pack_hook(x):
+                nonlocal pack_count
+                pack_count += 1
+                return x
+
+            def unpack_hook(x):
+                nonlocal unpack_count
+                unpack_count += 1
+                return x
+
+            a = torch.ones(5, requires_grad=True)
+            b = torch.ones(5, requires_grad=True)
+            with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
+                y = a * b * 2
+                y.sum().backward()
+
+            yield pack_count
+            yield unpack_count
+            yield a.grad
+            yield b.grad
+
+        self.check_output_and_recompiles(fn)
+
     def test_reentrant_checkpointing(self):
         def fn(x):
             y = x.sin()
@@ -2531,6 +2555,55 @@ TORCH_LIBRARY(test_cudagraphs_cpu_scalar_used_in_cpp_custom_op, m) {
             r"\(e.g. reentrant checkpointing\), this is not supported yet\.",
         ), torch._dynamo.compiled_autograd.enable(torch.compile):
             out.backward()
+
+    def test_saved_tensor_hooks_nested_non_jagged(self):
+        def fn():
+            def pack(x):
+                return x - 10
+
+            def unpack(x):
+                return x + 10
+
+            with torch.autograd.graph.saved_tensors_hooks(pack, unpack):
+                a = torch.rand(1, 4, 2, requires_grad=True)
+                b = torch.rand(1, 8, 2, requires_grad=True)
+                nt_1 = torch.nested.as_nested_tensor([a, b])
+                nt_2 = nt_1.clone().detach_()
+                out = torch.nn.functional.scaled_dot_product_attention(nt_1, nt_2, nt_2)
+                loss = torch.nested.to_padded_tensor(out, 0).sum()
+                loss.backward()
+                yield a.grad
+                yield b.grad
+
+        with self.assertRaisesRegex(
+            RuntimeError, r"Compiled autograd is not yet supported for NestedTensors"
+        ):
+            self.check_output_and_recompiles(fn)
+
+    def test_saved_tensor_hooks_nested_jagged(self):
+        def fn():
+            def pack(x):
+                return x - 10
+
+            def unpack(x):
+                return x + 10
+
+            with torch.autograd.graph.saved_tensors_hooks(pack, unpack):
+                offsets = torch.tensor([0, 2, 3])
+                a = torch.randn(3, 2, requires_grad=True)
+                b = torch.randn(3, 4, requires_grad=True)
+                nt_1 = torch.nested.nested_tensor_from_jagged(a, offsets)
+                nt_2 = torch.nested.nested_tensor_from_jagged(b, offsets)
+                nt_3 = torch.cat([nt_1, nt_2], dim=-1)
+                loss = nt_3.values().sum()
+                loss.backward()
+                yield a.grad
+                yield b.grad
+
+        with self.assertRaisesRegex(
+            RuntimeError, r"Compiled autograd is not yet supported for NestedTensors"
+        ):
+            self.check_output_and_recompiles(fn)
 
 
 def load_test_module(name):
@@ -2612,6 +2685,10 @@ known_graph_breaks_tests = {
     "test_backward_tensorlist_input_requires_list_grads_none_or_Tensor",  # torch/_custom_op/autograd.py in skip files
     "test_backward_tensorlist_input_requires_list_grads_with_same_numel",  # torch/_custom_op/autograd.py in skip files
     "test_save_for_backward_inputs_are_namedtuple",  # torch/_custom_op/autograd.py in skip files
+    "test_saved_tensor_hooks_custom_error_propagaation",  # throws
+    "test_saved_tensor_hooks_extra_exit_during_bw_no_crash",  # ctx.__exit__
+    "test_callback_propagates_errors_from_device_thread",  # throws
+    "test_checkpointing_without_reentrant",
 }
 
 test_contexts = {
@@ -2721,6 +2798,7 @@ known_failing_tests = {
     # Category: Divergence from eager
     "test_invalid_gradients",  # can't give autograd error due to inaccurate output metadata of lifted backward
     "test_autograd_node_isinstance",  # backward ctx is a fake cls and not directly a Node instance
+    "test_saved_tensor_hooks_extra_enter_during_bw_no_leak",  # lifted args leak
     # Uncategorized
 }
 
