@@ -438,19 +438,28 @@ class CppPackedGemmTemplate(CppTemplate):
             min_Mc_blocks = math.ceil(min_Mc_ratio * Mr / Nr)
             assert min_Mc_blocks >= 1
             Kt_bytes = Kt_blocks * Kr * num_byte_A
-            if min_Mc_blocks * Mr * Kt_bytes < L2:
+            Nr_bytes = Nr * 4  # assume acc is float32/int32
+            Nt_bytes = Nt_blocks * Nr_bytes
+            if min_Mc_blocks * Mr * (Kt_bytes + Nt_bytes) < L2 / 2:
+                Mc_blocks = min(
+                    Mt_blocks, math.floor(L2 / 2 / (Mr * (Kt_bytes + Nt_bytes)))
+                )
+                Nc_blocks = Nt_blocks
+            elif min_Mc_blocks * Mr * (Kt_bytes + Nr_bytes) < L2:
                 # Strategy 1: A (Mc x Kt) resides in L2 and reused by all Nt
                 # when Nc_blocks is kept 1. Mc should be large enough (>= min_Mc_blocks)
                 # to reuse B (Kc x Nr) in L1. This makes C (Mc x Nr) small enough to reside
                 # in L1.
-                Mc_blocks = min(Mt_blocks, math.floor(L2 / (Mr * Kt_bytes)))
+                Mc_blocks = min(
+                    Mt_blocks, math.floor(L2 / (Mr * (Kt_bytes + Nr_bytes)))
+                )
                 Nc_blocks = 1
             else:
                 # Strategy 2: Kt is too large to hold A (Mc x Kt) in L2, we reuse
                 # A (Mc x Kc) in L2 by B (Kc x Nc). C (Mc x Nc) resides in L2.
                 Mc_blocks = Mt_blocks
                 Nc_blocks = min(math.ceil(Mc_blocks * Mr / Nr), Nt_blocks)
-                Nc_bytes = Nc_blocks * Nr * 4  # assume C or acc is float32/int32
+                Nc_bytes = Nc_blocks * Nr_bytes
                 Kc_bytes = Kc_blocks * Kr * num_byte_A
                 if Mc_blocks * Mr * (Kc_bytes + Nc_bytes) > L2:
                     # The following is the solution for 4*Mc*Nc + Mc*Kc_bytes = L2,
