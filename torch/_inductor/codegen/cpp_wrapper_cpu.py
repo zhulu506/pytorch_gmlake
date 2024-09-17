@@ -1686,7 +1686,6 @@ class CppWrapperCpu(WrapperCodeGen):
         call_strs = []
         if config.abi_compatible:
             final_tmp_name = None
-            final_tmp_name_is_RAIIAtenTensorHandle = False
 
             def create_reinterpret_call():
                 tmp_name = f"tmp_tensor_handle_{next(self.tmp_tensor_id)}"
@@ -1749,7 +1748,6 @@ class CppWrapperCpu(WrapperCodeGen):
                     )
                     call_strs.extend(tmp_call_strs)
                     final_tmp_name = tmp_output_name
-                    final_tmp_name_is_RAIIAtenTensorHandle = True
                 else:
                     return f"{data.get_name()}"
             else:
@@ -1763,18 +1761,29 @@ class CppWrapperCpu(WrapperCodeGen):
                         reinterpret_call
                     )
                     call_strs.extend(tmp_call_strs)
+                elif (
+                    self.can_stack_allocate_buffer(data)
+                    and self.is_statically_known_list_of_ints(size_list)
+                    and self.is_statically_known_list_of_ints(stride_list)
+                    and ir.is_contiguous_strides_for_shape(stride_list, size_list)
+                ):
+                    # No need to wrap with RAIIAtenTensorHandle when using stack_allocation
+                    call_strs.append(
+                        f"auto wrap_with_raii_handle_if_needed_{final_tmp_name}"
+                        f"= wrap_with_raii_handle_if_needed({final_tmp_name});"
+                    )
+                    final_tmp_name = f"wrap_with_raii_handle_if_needed_{final_tmp_name}"
+                else:
+                    call_strs.append(
+                        f"RAIIAtenTensorHandle {final_tmp_name}_raii({final_tmp_name});"
+                    )
+                    final_tmp_name = f"{final_tmp_name}_raii"
+
             # Because the memory planning is done in two passes (see the implementation
             # of self.generate), the writeline behavior is different in the two passes.
             if writer is None:
                 writer = self
             writer.writelines(call_strs)
-            if (
-                self.can_stack_allocate_buffer(data)
-                and self.is_statically_known_list_of_ints(size_list)
-                and self.is_statically_known_list_of_ints(stride_list)
-                and ir.is_contiguous_strides_for_shape(stride_list, size_list)
-            ):
-                return final_tmp_name
 
             # NB, the return handle here represents a temporary tensor, which will be automatically
             # released.
@@ -1805,10 +1814,7 @@ class CppWrapperCpu(WrapperCodeGen):
             #     }.data()
             # );
             # ```
-            if not final_tmp_name_is_RAIIAtenTensorHandle:
-                return f"wrap_with_raii_handle_if_needed({final_tmp_name})"
-            else:
-                return final_tmp_name
+            return final_tmp_name
         else:
             args = [data.get_name(), size, stride, offset]
             return f"reinterpret_tensor({', '.join(args)})"
