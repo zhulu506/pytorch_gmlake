@@ -525,6 +525,47 @@ class _StridedShard(Shard):
 
 
 @dataclass(frozen=True)
+class _FlatShard(Shard):
+    """
+    The ``_FlatShard`` placement flattens the tensor to 1D and then shards it.
+    Compared to ``Shard(0)``, this can reduce the amount of padding when the
+    shard mesh dim is larger than the tensor's dim-0 size. However, this has
+    poor support for DTensor APIs, and the local shard loses the tensor shape.
+    """
+
+    dim: int = 0
+
+    def __post_init__(self):
+        if self.dim != 0:
+            raise AssertionError(
+                f"{self.__class__.__name__} only supports dim-0, not {self.dim}"
+            )
+
+    def _shard_tensor(
+        self, tensor: torch.Tensor, mesh: DeviceMesh, mesh_dim: int
+    ) -> torch.Tensor:
+        return super()._shard_tensor(tensor.view(-1), mesh, mesh_dim)
+
+    def _to_replicate_tensor(
+        self,
+        local_tensor: torch.Tensor,
+        mesh: DeviceMesh,
+        mesh_dim: int,
+        current_logical_shape: List[int],
+    ) -> torch.Tensor:
+        if mesh.ndim > 1:
+            raise AssertionError(
+                f"Can only redistribute {self.__class__.__name__} to replicate "
+                f"for 1D mesh, not {mesh_dim=} on {mesh=}"
+            )
+        flat_replicate_tensor = super()._to_replicate_tensor(
+            local_tensor, mesh, mesh_dim, current_logical_shape
+        )
+        replicate_tensor = flat_replicate_tensor.view(current_logical_shape)
+        return replicate_tensor
+
+
+@dataclass(frozen=True)
 class Replicate(Placement):
     """
     The ``Replicate()`` placement describes the DTensor replicating on a corresponding

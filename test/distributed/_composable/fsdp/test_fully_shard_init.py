@@ -3,7 +3,7 @@
 import copy
 import itertools
 import unittest
-from typing import List
+from typing import List, Optional
 
 import torch
 import torch.distributed as dist
@@ -33,7 +33,7 @@ from torch.distributed.tensor.parallel import (
     parallelize_module,
     RowwiseParallel,
 )
-from torch.distributed.tensor.placement_types import _StridedShard
+from torch.distributed.tensor.placement_types import _FlatShard, _StridedShard
 from torch.testing._internal.common_cuda import TEST_CUDA
 from torch.testing._internal.common_fsdp import FSDPTestMultiThread, MLP
 from torch.testing._internal.common_utils import run_tests
@@ -991,6 +991,43 @@ class TestFullyShardHSDPBroadcast(FSDPTestMultiThread):
         # Check that we can run an iteration without erroring
         inp = torch.randint(0, model_args.vocab_size, (2, 16), device="cuda")
         model(inp).sum().backward()
+
+
+class TestFullyShardShardPlacementFn(FSDPTestMultiThread):
+    @property
+    def world_size(self) -> int:
+        return 8
+
+    def _init_models(self):
+        torch.manual_seed(42)
+        model_args = ModelArgs(n_layers=3, dropout_p=0.0)
+        model = Transformer(model_args)
+        for param in model.parameters():
+            dist.broadcast(param.detach(), src=0)
+        ref_model = copy.deepcopy(model)
+        return model, ref_model
+
+    @unittest.skipIf(not TEST_CUDA, "no cuda")
+    def test_init_1d_transformer_flat_shard(self):
+        model, ref_model = self._init_models()
+
+        def shard_placement_fn(param: nn.Parameter) -> Optional[Shard]:
+            return _FlatShard(0)
+
+        for layer in model.layers:
+            fully_shard(layer, shard_placement_fn=shard_placement_fn)
+        fully_shard(model, shard_placement_fn=shard_placement_fn)
+
+        for param, ref_param in zip(model.parameters(), ref_model.parameters()):
+            # NOTE: Flat sharding flattens the global shape, so we must view
+            # back to the unflattened shape manually.
+            self.assertEqual(param.shape, ref_param.view(-1).shape)
+            full_param = param.full_tensor().view(ref_param.shape)
+            self.assertEqual(full_param, ref_param)
+            ref_dtensor = distribute_tensor(
+                ref_param, param.device_mesh, param.placements
+            )
+            self.assertEqual(ref_dtensor, param)
 
 
 if __name__ == "__main__":
