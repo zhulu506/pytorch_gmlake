@@ -8,7 +8,9 @@ This module defines runtime wrappers, which, based on previous analysis attempts
 """
 import builtins
 import collections
+import logging
 import pprint
+import traceback
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from functools import wraps
@@ -25,6 +27,7 @@ from torch._guards import (
     tracing,
     TracingContext,
 )
+from torch._logging import trace_structured
 from torch._prims_common import CUDARngStateHelper
 from torch._subclasses import FakeTensor
 from torch.fx.experimental._backward_state import BackwardState
@@ -67,6 +70,8 @@ from .utils import (
 
 
 zip = strict_zip
+
+log = logging.getLogger(__name__)
 
 
 class CompilerWrapper:
@@ -1983,17 +1988,33 @@ To fix this, your tensor subclass must implement the dunder method __force_to_sa
                         with tracing(saved_context), compile_context(
                             saved_compile_context
                         ), context(), track_graph_compiling(aot_config, "backward"):
-                            CompiledFunction.compiled_bw = aot_config.bw_compiler(
-                                bw_module, placeholder_list
-                            )
-                            # Maybe save cache entry
-                            if try_save_cache_entry is not None:
-                                try_save_cache_entry(
-                                    CompiledFunction.compiled_bw,
-                                    fw_metadata,
-                                    aot_config,
+                            try:
+                                CompiledFunction.compiled_bw = aot_config.bw_compiler(
+                                    bw_module, placeholder_list
                                 )
-
+                                # Maybe save cache entry
+                                if try_save_cache_entry is not None:
+                                    try_save_cache_entry(
+                                        CompiledFunction.compiled_bw,
+                                        fw_metadata,
+                                        aot_config,
+                                    )
+                            except Exception as e:
+                                exc = e
+                                trace_structured(
+                                    "artifact",
+                                    metadata_fn=lambda: {
+                                        "name": "eager_compile_backwards_failure",
+                                        "encoding": "string",
+                                    },
+                                    payload_fn=lambda: "\n".join(
+                                        traceback.format_exception(exc)
+                                    ),
+                                )
+                                log.warning(
+                                    "failed to eagerly compile backwards for dynamic, suppressing in case backwards not needed",
+                                    exc_info=True,
+                                )
                     if (
                         torch._functorch.config.donated_buffer
                         and not saved_tensors_use_once

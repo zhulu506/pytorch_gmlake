@@ -50,6 +50,7 @@ from torch.fx.experimental.symbolic_shapes import GuardOnDataDependentSymNode, S
 from torch.nn.utils.rnn import PackedSequence
 from torch.testing._internal.common_device_type import (
     instantiate_device_type_tests,
+    largeTensorTest,
     ops,
     tol,
     toleranceOverride,
@@ -6217,6 +6218,97 @@ class TestAOTModuleSimplified(AOTTestCase):
         x = torch.randn(4, 4)
         torch.compile(fn, backend="inductor", fullgraph=True)(x)
         torch.compile(fn_, backend="inductor", fullgraph=True)(x)
+
+    @skipIfTorchDynamo()
+    def test_non_aot_bw_compile_saved_symints_smoke(self):
+        def fn(x):
+            return x.clone()
+
+        def inps_fn():
+            return (torch.randn(3, requires_grad=True),)
+
+        ref_inps = inps_fn()
+
+        ref_out = fn(*ref_inps)
+
+        inps = inps_fn()
+        torch._dynamo.mark_dynamic(inps[0], 0)
+
+        out = torch.compile(fn, backend="aot_eager", fullgraph=True, dynamic=True)(
+            *inps
+        )
+        out.sum().backward()
+
+        torch.compile(fn, backend="aot_eager", fullgraph=True, dynamic=False)(
+            *inps_fn()
+        ).sum().backward()
+
+    @skipIfTorchDynamo()
+    @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
+    @largeTensorTest("5GB", device="cuda")
+    def test_non_aot_bw_compile_int32_64_shapes(self):
+        class MyFunc(torch.autograd.Function):
+            @staticmethod
+            def forward(ctx, x, y):
+                ctx.y_shape = y.shape
+                return x, y
+
+            @staticmethod
+            def backward(ctx, grad_x, grad_y):
+                tmp = torch.cat([grad_x, grad_y])
+                out = tmp + tmp
+                return grad_x, out.sum().expand(ctx.y_shape)
+
+        def f(x, y):
+            return MyFunc.apply(x, y)
+
+        f_compiled = torch.compile(f, fullgraph=True, dynamic=True)
+
+        # int32 indices enough
+        ref_x = torch.randn(
+            6, 5, device="cuda", dtype=torch.float16, requires_grad=True
+        )
+        ref_y = torch.randn(
+            4, 5, device="cuda", dtype=torch.float16, requires_grad=True
+        )
+
+        x = ref_x.clone().detach().requires_grad_()
+        y = ref_y.clone().detach().requires_grad_()
+
+        torch._dynamo.mark_dynamic(x, 0)
+        torch._dynamo.mark_dynamic(y, 0)
+
+        ref_out = f(ref_x, ref_y)
+        (ref_out[0].sum() + ref_out[1].sum()).sum().backward()
+
+        out = f_compiled(x, y)
+        (out[0].sum() + out[1].sum()).sum().backward()
+        self.assertTrue(torch.allclose(ref_out[0], out[0]))
+        self.assertTrue(torch.allclose(ref_out[1], out[1]))
+        self.assertTrue(torch.allclose(ref_x.grad, x.grad))
+        self.assertTrue(torch.allclose(ref_y.grad, y.grad))
+
+        # int64 indices needed
+        ref_x2 = torch.randn(
+            1, 47001, device="cuda", dtype=torch.float16, requires_grad=True
+        )
+        ref_y2 = torch.randn(
+            47000, 47001, device="cuda", dtype=torch.float16, requires_grad=True
+        )
+        x2 = ref_x2.clone().detach().requires_grad_()
+        y2 = ref_y2.clone().detach().requires_grad_()
+        torch._dynamo.mark_dynamic(x2, 0)
+        torch._dynamo.mark_dynamic(y2, 0)
+
+        ref_out2 = f(ref_x2, ref_y2)
+        (ref_out2[0].sum() + ref_out2[1].sum()).sum().backward()
+
+        out2 = f_compiled(x2, y2)
+        (out2[0].sum() + out2[1].sum()).sum().backward()
+        self.assertTrue(torch.allclose(ref_out2[0], out2[0]))
+        self.assertTrue(torch.allclose(ref_out2[1], out2[1]))
+        self.assertTrue(torch.allclose(ref_x2.grad, x2.grad))
+        self.assertTrue(torch.allclose(ref_y2.grad, y2.grad))
 
 
 # entries in here don't work and need to be fixed.
