@@ -30,13 +30,14 @@ from .replace_random import replace_random_passes
 
 
 log = logging.getLogger(__name__)
+canonicalization_patterns = PatternMatcherPass()
 patterns = PatternMatcherPass()
 aten = torch.ops.aten
 prims = torch.ops.prims
 
-pass_patterns = [
-    patterns,
-    PatternMatcherPass(),
+joint_graph_pattern_passes = [
+    canonicalization_patterns,
+    patterns 
 ]
 
 
@@ -449,6 +450,9 @@ def joint_graph_passes(graph: torch.fx.GraphModule):
 
     remove_noop_ops(graph.graph)
 
+    from ..._functorch.compile_utils import fx_graph_cse
+    graph.graph = fx_graph_cse(graph.graph)
+
     if config.joint_graph_constant_folding:
         with GraphTransformObserver(
             graph, "constant_fold_uniform_value", config.trace.log_url_for_graph_xform
@@ -456,9 +460,14 @@ def joint_graph_passes(graph: torch.fx.GraphModule):
             constant_fold_uniform_value(graph)
 
     if config.pattern_matcher:
-        for patterns in pass_patterns:
+        for patterns in joint_graph_pattern_passes:
             count += patterns.apply(graph.graph)  # type: ignore[arg-type]
 
+        remove_noop_ops(graph.graph)
+
+    stable_topological_sort(graph.graph)
+    # graph.graph = fx_graph_cse(graph.graph)
+    # graph.print_readable(colored=True)
     if not config.fallback_random:
         count += replace_random_passes(graph)
 
@@ -539,7 +548,7 @@ def fix_iota_device(match: Match, length, start, step, dtype, device, requires_g
         ),
         KeywordArg("dtype2"),
     ),
-    pass_dict=patterns,
+    pass_dict=canonicalization_patterns,
 )
 def pointless_convert(match: Match, arg, dtype1: torch.dtype, dtype2: torch.dtype):
     """Remove chain of dtype conversions often created by AMP"""
@@ -557,7 +566,7 @@ def pointless_convert(match: Match, arg, dtype1: torch.dtype, dtype2: torch.dtyp
 
 @register_graph_pattern(
     CallFunction(torch.ops.aten.view.default, KeywordArg("arg"), KeywordArg("size")),
-    pass_dict=patterns,
+    pass_dict=canonicalization_patterns,
 )
 def pointless_view(match: Match, arg, size):
     """Remove no-op view"""
@@ -662,7 +671,7 @@ def mul_softmax_pattern(match: Match, *, inp, other, dim, keepdim, dtype=None):
 for reverse, to_dtype in itertools.product((False, True), repeat=2):
     register_graph_pattern(
         _partial_softmax_pattern(aten.mul.Tensor, reverse=reverse, to_dtype=to_dtype),
-        pass_dict=pass_patterns[1],
+        pass_dict=patterns,
         extra_check=_other_is_broadcasted_in_dim,
     )(mul_softmax_pattern)
 
@@ -689,6 +698,6 @@ def div_softmax_pattern(match: Match, *, inp, other, dim, keepdim, dtype=None):
 for to_dtype in (False, True):
     register_graph_pattern(
         _partial_softmax_pattern(aten.div.Tensor, to_dtype=to_dtype),
-        pass_dict=pass_patterns[1],
+        pass_dict=patterns,
         extra_check=_other_is_broadcasted_in_dim,
     )(div_softmax_pattern)
