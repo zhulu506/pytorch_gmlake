@@ -4969,6 +4969,19 @@ def sample_inputs_reduction_count_nonzero(*args, **kwargs):
         sample.kwargs.pop('keepdim', None)
         yield sample
 
+
+def sample_inputs_reduction_unique(*args, **kwargs):
+    # for median with indices, the index might not be unique
+    # and depends on the device and the kernel. We return samples with unique
+    # values if `unique_values` is true and we return samples with non-unique
+    # value if `unique_values` is false.
+    unique_values = kwargs.pop('unique_values', False)
+    for sample in sample_inputs_reduction(*args, **kwargs):
+        is_nonunique = 'dim' in sample.kwargs and sample.args and sample.args[0].unique().numel() != sample.args[0].numel()
+        if is_nonunique == unique_values:
+            yield sample
+
+
 def sample_inputs_leaky_relu(op_info, device, dtype, requires_grad, **kwargs):
     N = 10
     make_arg = partial(make_tensor, device=device, dtype=dtype, requires_grad=requires_grad)
@@ -14147,6 +14160,7 @@ op_db: List[OpInfo] = [
            skips=(
            )),
     OpInfo('median',
+           variant_test_name='nonunique',
            dtypes=all_types_and(torch.bfloat16, torch.float16),
            dtypesIfHpu=custom_types(torch.float32, torch.bfloat16, torch.int32),
            # TODO: some signatures of median do support out
@@ -14154,14 +14168,40 @@ op_db: List[OpInfo] = [
            supports_forward_ad=True,
            supports_fwgrad_bwgrad=True,
            error_inputs_func=error_inputs_median,
-           sample_inputs_func=partial(sample_inputs_reduction, supports_multiple_dims=False)),
+           sample_inputs_func=partial(sample_inputs_reduction_unique, supports_multiple_dims=False, unique_values=False),
+           skips=(
+               DecorateInfo(unittest.skip("Non-deterministic when non-unique values present"), 'TestDecomp', 'test_comprehensive'),
+               DecorateInfo(unittest.skip("Non-deterministic when non-unique values present"), 'TestDecomp', 'test_quick'),
+           )),
+    OpInfo('median',
+           variant_test_name='unique',
+           dtypes=all_types_and(torch.bfloat16, torch.float16),
+           # TODO: some signatures of median do support out
+           supports_out=False,
+           supports_forward_ad=True,
+           supports_fwgrad_bwgrad=True,
+           error_inputs_func=error_inputs_median,
+           sample_inputs_func=partial(sample_inputs_reduction_unique, supports_multiple_dims=False, unique_values=True)),
     OpInfo('nanmedian',
+           variant_test_name='nonunique',
            dtypes=all_types_and(torch.bfloat16, torch.float16),
            # TODO: some signatures of nanmedian do support out
            supports_out=False,
            supports_forward_ad=True,
            supports_fwgrad_bwgrad=True,
-           sample_inputs_func=partial(sample_inputs_reduction, supports_multiple_dims=False)),
+           sample_inputs_func=partial(sample_inputs_reduction_unique, supports_multiple_dims=False, unique_values=False),
+           skips=(
+               DecorateInfo(unittest.skip("Non-deterministic when non-unique values present"), 'TestDecomp', 'test_comprehensive'),
+               DecorateInfo(unittest.skip("Non-deterministic when non-unique values present"), 'TestDecomp', 'test_quick'),
+           )),
+    OpInfo('nanmedian',
+           variant_test_name='unique',
+           dtypes=all_types_and(torch.bfloat16, torch.float16),
+           # TODO: some signatures of nanmedian do support out
+           supports_out=False,
+           supports_forward_ad=True,
+           supports_fwgrad_bwgrad=True,
+           sample_inputs_func=partial(sample_inputs_reduction_unique, supports_multiple_dims=False, unique_values=True)),
     OpInfo('var_mean',
            dtypes=floating_and_complex_types_and(torch.half, torch.bfloat16),
            dtypesIfHpu=custom_types(torch.float32, torch.bfloat16),
