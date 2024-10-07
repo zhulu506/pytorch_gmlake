@@ -4271,7 +4271,6 @@ instantiate_parametrized_tests(NCCLTraceTestDumpOnTimeout)
 instantiate_parametrized_tests(NCCLTraceTest)
 
 
-@skip_but_pass_in_sandcastle
 class NCCLTraceTestTimeoutDumpOnStuckRanks(NCCLTraceTestDumpOnTimeoutBase):
     @check_if_test_is_skipped
     def _check_return_codes(self, elapsed_time):
@@ -4287,9 +4286,13 @@ class NCCLTraceTestTimeoutDumpOnStuckRanks(NCCLTraceTestDumpOnTimeoutBase):
         os.environ["TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC"] = "1"
         # restore this env var to its prior default in case another test changed it
         os.environ["TORCH_NCCL_COORD_CHECK_MILSEC"] = "1000"
+        prev_nccl_async_error_handling = os.environ.get(
+            "TORCH_NCCL_ASYNC_ERROR_HANDLING", None
+        )
+        os.environ["TORCH_NCCL_ASYNC_ERROR_HANDLING"] = "0"
 
         if self.rank == self.MAIN_PROCESS_RANK:
-            # wait for both rank0 and 1 to crash before looking for both ranks' output
+            # wait for both rank0 and rank1 to crash before looking for both ranks' output
             # file, and we rely on rank1 to sleep long enough to dump the debug info.
             self.assertEqual(self._wait_process(0, timeout=90), -6)
             self.assertEqual(self._wait_process(1, timeout=90), -6)
@@ -4323,6 +4326,11 @@ class NCCLTraceTestTimeoutDumpOnStuckRanks(NCCLTraceTestDumpOnTimeoutBase):
                 # Force rank 1 to idle so that it will eventually timeout as well after
                 # getting the global signal to dump the debugging info.
                 time.sleep(600)
+
+        if prev_nccl_async_error_handling is not None:
+            os.environ[
+                "TORCH_NCCL_ASYNC_ERROR_HANDLING"
+            ] = prev_nccl_async_error_handling
 
 
 @skip_but_pass_in_sandcastle
