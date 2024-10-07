@@ -419,6 +419,11 @@ class FSDPParamGroup:
             if isinstance(work, dist.distributed_c10d.Work):
                 work.wait()
             self._all_gather_result = None
+        if self.is_sharded:
+            for fsdp_param in self.fsdp_params:
+                if hasattr(fsdp_param, "_unsharded_param"):
+                    fsdp_param.unsharded_grad = fsdp_param._unsharded_param.grad
+                    delattr(fsdp_param, "_unsharded_param")
         self._post_forward_indices.clear()
 
     def _wait_for_post_backward(self):
