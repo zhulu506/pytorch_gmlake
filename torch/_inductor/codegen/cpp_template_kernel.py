@@ -74,7 +74,7 @@ class CppTemplateKernel(CppKernel):
         unique_sizevars = {
             s
             for input in inputs.values()
-            if input is not None
+            if input is not None and not isinstance(input, ir.View)
             for sym in itertools.chain(input.get_size(), input.get_stride())
             if isinstance(sym, sympy.Expr)
             for s in sym.free_symbols

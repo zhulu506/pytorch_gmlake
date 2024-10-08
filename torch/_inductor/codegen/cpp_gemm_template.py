@@ -843,7 +843,7 @@ class CppGemmTemplate(CppTemplate):
                     micro_gemm,
                 )
                 W_packed = new_input_nodes[1]
-                if W_node.get_name() in V.graph.constants:
+                if weight_is_constant:
                     W_packed = V.graph.add_tensor_constant(W_packed)
                 W_packed_constant = V.graph.add_tensor_constant(W_packed)
                 new_input_nodes[1] = W_packed_constant
@@ -1324,11 +1324,16 @@ class CppGemmTemplate(CppTemplate):
         self,
         kernel: CppTemplateKernel,
         template_buffer_node: Optional[ir.CppTemplateBuffer] = None,
+        flag_template_buffer_has_other_users: Optional[bool] = None,
         epilogue_nodes: Optional[List[ir.IRNode]] = None,
         **kwargs,
     ) -> str:
         options, fake_buffers = self.get_options(
-            kernel, template_buffer_node, epilogue_nodes, **kwargs
+            kernel=kernel,
+            template_buffer_node=template_buffer_node,
+            flag_template_buffer_has_other_users=flag_template_buffer_has_other_users,
+            epilogue_nodes=epilogue_nodes,
+            **kwargs,
         )
 
         full_template = MICROKERNEL_DEF + GEMM_STUB + GEMM_TEMPLATE

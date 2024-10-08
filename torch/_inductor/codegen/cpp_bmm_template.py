@@ -147,11 +147,16 @@ class CppBmmTemplate(CppGemmTemplate):
         self,
         kernel: CppTemplateKernel,
         template_buffer_node: Optional[ir.CppTemplateBuffer] = None,
+        flag_template_buffer_has_other_users: Optional[bool] = None,
         epilogue_nodes: Optional[List[ir.IRNode]] = None,
         **kwargs,
     ) -> Tuple[Dict[str, Any], List[ir.Buffer]]:
         options, fake_buffers = super().get_options(
-            kernel, template_buffer_node, epilogue_nodes, **kwargs
+            kernel=kernel,
+            template_buffer_node=template_buffer_node,
+            flag_template_buffer_has_other_users=flag_template_buffer_has_other_users,
+            epilogue_nodes=epilogue_nodes,
+            **kwargs,
         )
         if options["micro_gemm"].get_b_layout() != LayoutType.NORMAL:
             self.should_block_weights = True
@@ -168,11 +173,16 @@ class CppBmmTemplate(CppGemmTemplate):
         self,
         kernel: CppTemplateKernel,
         template_buffer_node: Optional[ir.CppTemplateBuffer] = None,
+        flag_template_buffer_has_other_users: Optional[bool] = None,
         epilogue_nodes: Optional[List[ir.IRNode]] = None,
         **kwargs,
     ) -> str:
         options, fake_buffers = self.get_options(
-            kernel, template_buffer_node, epilogue_nodes, **kwargs
+            kernel=kernel,
+            template_buffer_node=template_buffer_node,
+            flag_template_buffer_has_other_users=flag_template_buffer_has_other_users,
+            epilogue_nodes=epilogue_nodes,
+            **kwargs,
         )
 
         with contextlib.ExitStack() as stack:
