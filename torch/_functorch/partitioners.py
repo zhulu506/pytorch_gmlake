@@ -1162,6 +1162,7 @@ def solve_min_cut(
 
     try:
         cut_value, partition = nx.minimum_cut(nx_graph, "source", "sink")
+        print("\n".join(nx.readwrite.edgelist.generate_edgelist(nx_graph)))
     except Exception:
         print("Failed to compute min-cut on following graph:")
         print("\n".join(nx.readwrite.edgelist.generate_edgelist(nx_graph)))
@@ -1293,6 +1294,7 @@ def get_default_op_list() -> OpTypes:
         aten.as_strided,
         aten.permute,
         aten.select,
+        torch.ops.subclass_utils.wrap_subclass,
     ]
     view_ops = recomputable_view_ops
     default_recomputable_ops += [

@@ -27,6 +27,9 @@ debug_assert = False
 
 debug_partitioner = os.environ.get("AOT_PARTITIONER_DEBUG", "0") != "0"
 
+# If we do this, should likely be a JK
+predispatch_backward = False
+
 # Today, if you are in a situation where there is "false aliasing"
 # (e.g. you have a bunch of model parameters that all alias the same underlying buffer),
 # our checks for this situation are very slow if these inputs have dynamic shapes.

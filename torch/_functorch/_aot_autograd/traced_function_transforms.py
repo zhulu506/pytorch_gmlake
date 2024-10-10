@@ -60,9 +60,25 @@ from .subclass_utils import (
     remap_unwrapped_subclass_arg_indices,
     requires_subclass_dispatch,
     unwrap_tensor_subclasses,
-    wrap_tensor_subclasses_maybe_joint,
+    wrap_tensor_subclasses,
 )
 from .utils import maybe_to_fresh_input
+
+
+@contextmanager
+def nop_functionalization():
+    try:
+        # Also make functionalization nop (it doesn't run on the pre-dispatch backward graph).
+        # Note that we can't actually disable it, because autograd ran on our FunctionalTensors
+        # in the forward (so we need run autograd w.r.t our FunctionalTensor inputs).
+        # We want it to be a no-op though, because we can't handle effectful ops from the backward graph.
+        functional_mode = torch._C._get_dispatch_mode(
+            torch._C._TorchDispatchModeKey.FUNCTIONAL
+        )
+        functional_mode.is_nop = True
+        yield
+    finally:
+        functional_mode.is_nop = False
 
 
 # This function returns a new function that returns mutated inputs as outputs.
@@ -262,12 +278,26 @@ def create_joint(fn: Callable, *, aot_config: AOTConfig) -> Any:
                         allow_unused=True,
                     )
                 else:
-                    backward_out = torch.autograd.grad(
-                        needed_outs,
-                        grad_primals,
-                        grad_outputs=needed_tangents,
-                        allow_unused=True,
+                    proxy_mode = torch._C._get_dispatch_mode(
+                        torch._C._TorchDispatchModeKey.PROXY
                     )
+                    if config.predispatch_backward:
+                        ctx1 = proxy_mode.move_to_pre_dispatch_for_joint_tracing(
+                            needed_tangents
+                        )
+                        ctx2 = nop_functionalization()
+                    else:
+                        ctx1 = nullcontext()
+                        ctx2 = nullcontext()
+                    with ctx1, ctx2:
+                        # Functionalization thinks it is running on the joint graph.
+                        # We need to temporarily turn it off and back on during the backward call.
+                        backward_out = torch.autograd.grad(
+                            needed_outs,
+                            grad_primals,
+                            grad_outputs=needed_tangents,
+                            allow_unused=True,
+                        )
         backward_out_iter = iter(backward_out)
         return outs, [
             next(backward_out_iter) if i else None for i in inputs_needs_grads
@@ -407,12 +437,22 @@ def create_functionalized_fn(
                 # trace them now, we will end up with FX nodes that don't have
                 # module stack annotations, which makes unflattener unhappy.
                 # Wrap inputs into functional wrappers
-                f_args = pytree.tree_map(to_fun, args)
+                if trace_joint:
+                    f_primals = pytree.tree_map(to_fun, args[0])
+                    f_tangents = (
+                        args[1]
+                        if config.predispatch_backward
+                        else pytree.tree_map(to_fun, args[1])
+                    )
+                    f_args = (f_primals, f_tangents)
+                else:
+                    f_args = pytree.tree_map(to_fun, args)
 
                 # Run the joint
                 f_outs = fn(*f_args)
 
-            if trace_joint:
+            # for predispatch backward, handle backward mutations once we retrace the backward and functionalize it
+            if not config.predispatch_backward and trace_joint:
                 # We support a limited amount of mutation of graph inputs during the backward pass.
                 # (This is used e.g. by Float8, which needs to update buffers during the backward pass)
                 # Here, we perform extra checks for primals that were mutated in the **backward**
@@ -635,7 +675,17 @@ def create_functionalized_fn(
                         flat_outs[i] = fw_args[info.base_idx]
                 return pytree.tree_unflatten(flat_outs, outs_spec)
 
-            return pytree.tree_map(from_fun, f_outs)
+            if trace_joint:
+                f_fw_outs, f_bw_outs = f_outs
+                fw_outs = pytree.tree_map(from_fun, f_fw_outs)
+                bw_outs = (
+                    f_bw_outs
+                    if config.predispatch_backward
+                    else pytree.tree_map(from_fun, f_bw_outs)
+                )
+                return (fw_outs, bw_outs)
+            else:
+                return pytree.tree_map(from_fun, f_outs)
 
     # Kinda annoying, but needed to make sure that the fx graph we trace out has "primals"
     # and "tangents" as its input names (which are special-cased by the partitioner)
@@ -759,9 +809,25 @@ def aot_dispatch_subclass(
 
     def inner_fn(fn, args, *, use_trace_joint: bool):
         # Step 1: wrap tensor inputs into subclasses if necessary
-        all_args = wrap_tensor_subclasses_maybe_joint(
-            args, is_joint_structure=use_trace_joint, meta=meta
-        )
+        if use_trace_joint:
+            all_args = ()
+            primals = wrap_tensor_subclasses(
+                args[0], subclass_metas=meta.subclass_inp_meta
+            )
+            # normally we wrap both our primals and tangents into subclasses during tracing.
+            # But for pre-dispatch tracing, we there is no need to wrap our tangents
+            # into subclasses, since we don't actually know if they are subclasses yet.
+            if config.predispatch_backward:
+                tangents = args[1]
+            else:
+                tangents = wrap_tensor_subclasses(
+                    args[1], subclass_metas=meta.subclass_tangent_meta
+                )
+            all_args = (primals, tangents)
+        else:
+            all_args = wrap_tensor_subclasses(
+                args, subclass_metas=meta.subclass_inp_meta
+            )
 
         # Step 2: call the inner function, with our (maybe subclass) inputs
         wrapped_outs = fn(*all_args)
@@ -775,10 +841,24 @@ def aot_dispatch_subclass(
             grad_inputs = wrapped_outs[1]
             subclass_meta.grad_input_metas = create_subclass_meta(grad_inputs)
 
-        # Step 3: Unwrap any subclass outputs back into dense tensors
-        unwrapped_outs = unwrap_tensor_subclasses(
-            wrapped_outs, is_joint_structure=use_trace_joint
-        )
+            # Step 3: Unwrap any subclass outputs back into dense tensors
+            unwrapped_fw_outs = unwrap_tensor_subclasses(
+                wrapped_outs[0], is_joint_structure=False
+            )
+            if config.predispatch_backward:
+                unwrapped_bw_outs = wrapped_outs[1]
+            else:
+                unwrapped_bw_outs = unwrap_tensor_subclasses(
+                    wrapped_outs[1], is_joint_structure=False
+                )
+            unwrapped_outs = (
+                unwrapped_fw_outs,
+                unwrapped_bw_outs,
+            )
+        else:
+            unwrapped_outs = unwrap_tensor_subclasses(
+                wrapped_outs, is_joint_structure=False
+            )
         return unwrapped_outs
 
     def joint_fn(primals, tangents):
@@ -794,17 +874,24 @@ def aot_dispatch_subclass(
     def metadata_fn(*primals):
         return inner_fn(fw_only, primals, use_trace_joint=False)
 
-    args_unwrapped = unwrap_tensor_subclasses(
-        args, is_joint_structure=is_joint_structure
-    )
     remapped_static_indices = remap_unwrapped_subclass_arg_indices(
         args, meta.static_input_indices
     )
 
     if is_joint_structure:
-        primals_unwrapped = args_unwrapped[0]
+        primals, tangents = args[0], args[1]
+        primals_unwrapped = unwrap_tensor_subclasses(primals, is_joint_structure=False)
+        if config.predispatch_backward:
+            tangents_unwrapped = tangents
+        else:
+            tangents_unwrapped = unwrap_tensor_subclasses(
+                tangents, is_joint_structure=False
+            )
+        args_unwrapped = (primals_unwrapped, tangents_unwrapped)
+
         fn_to_trace = joint_fn
     else:
+        args_unwrapped = unwrap_tensor_subclasses(args, is_joint_structure=False)
         primals_unwrapped = args_unwrapped
         fn_to_trace = fw_fn
 
