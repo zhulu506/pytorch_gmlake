@@ -1098,7 +1098,7 @@ class PipelineScheduleMulti(_PipelineSchedule):
     def _initialize_stages(self, args: Tuple[Any, ...], kwargs):
         # may be 'none' value (if this stage sends its output shapes to the next stage via P2P)
         # or real value (if this stage and next stage are on the same device)
-        next_stage_args: Tuple[Any, ...] = tuple()
+        next_stage_args: Tuple[Any, ...] = ()
         for stage in self._stages:
             if stage.is_first:
                 next_stage_args = stage._prepare_forward_infra(

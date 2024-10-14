@@ -456,7 +456,7 @@ def topological_sort_dfs(nodes: List[BaseSchedulerNode]) -> List[BaseSchedulerNo
     the nodes in ascending order of this priority.
     """
     seen: OrderedSet[BaseSchedulerNode] = OrderedSet()
-    name_to_node: Dict[str, BaseSchedulerNode] = dict()
+    name_to_node: Dict[str, BaseSchedulerNode] = {}
     result: List[BaseSchedulerNode] = []
 
     def visit(n: BaseSchedulerNode) -> None:

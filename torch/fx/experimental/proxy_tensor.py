@@ -1018,7 +1018,7 @@ class PythonKeyTracer(Tracer):
         self.script_object_tracker = WeakIdKeyDictionary(
             dict=None, ref_type=_WeakHashRef
         )
-        self.sympy_expr_tracker = dict()
+        self.sympy_expr_tracker = {}
 
         # Stores the torch function that was called during tracing
         self.torch_fn_metadata = None

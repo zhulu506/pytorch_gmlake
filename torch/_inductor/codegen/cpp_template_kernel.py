@@ -247,7 +247,7 @@ class CppTemplateKernel(CppKernel):
                 (list(var_ranges.keys()), ()),
                 var_ranges,
                 list(var_ranges.keys()),
-                tuple(),
+                (),
             )
             bodies.append(body)
             var_sizes_list.append(var_sizes)

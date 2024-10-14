@@ -864,7 +864,7 @@ class _PipelineStage(_PipelineStageBase):
 
         # Send info during forward for each activation
         self.act_send_info = self._create_act_send_info()
-        return tuple()
+        return ()
 
     def get_stage_index_of_submod(
         self,
@@ -1429,7 +1429,7 @@ class PipelineStage(_PipelineStageBase):
                 group=self.group,
                 device=self.device,
             )
-            outputs_meta = tuple()
+            outputs_meta = ()
 
         return outputs_meta
 
@@ -1442,7 +1442,7 @@ class PipelineStage(_PipelineStageBase):
         # TODO move self.device to an argument from step API (from its input tensors)?
         assert num_microbatches is not None, "TODO fix num_microbatches"
 
-        outputs: Tuple[Any, ...] = tuple()
+        outputs: Tuple[Any, ...] = ()
         if self.inputs_meta is None:
             outputs = self._shape_inference(args, kwargs)
 

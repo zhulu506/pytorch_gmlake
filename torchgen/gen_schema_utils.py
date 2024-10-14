@@ -87,9 +87,7 @@ class FunctionSchemaGen:
         for name, inp in example_inputs:
             args.append(ArgumentGen.from_example(name, inp, None, None))
         # ignore the annotations and other attributes for now, we could add more when needed.
-        arguments = Arguments(
-            tuple(), None, tuple(args), tuple(), None, tuple(), tuple()
-        )
+        arguments = Arguments((), None, tuple(args), (), None, (), ())
         returns = tuple(
             ReturnGen.from_example(None, out, None) for out in example_outputs
         )

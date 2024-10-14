@@ -103,7 +103,7 @@ def get_param_groups(
     # reverse graph that starts with inputs, and goes up to the dOutput or the loss,
     # but omits weights and any subgraphs connecting weights to this closure
     inputs_closure, _ = reverse_closure(inputs, set(), reverse_edges_dict)
-    param_groups: Dict[Node, Dict[str, Set]] = dict()  # keyed on intermediates
+    param_groups: Dict[Node, Dict[str, Set]] = {}  # keyed on intermediates
     for i, param in enumerate(params):
         closure, intersected = reverse_closure(
             [param], inputs_closure, reverse_edges_dict
@@ -238,7 +238,7 @@ def stage_backward_weight(
         dweights = torch.autograd.grad(
             intermediate_edges,
             weights_edges,
-            grad_outputs=sum(param_group["grads"], tuple()),
+            grad_outputs=sum(param_group["grads"], ()),
             retain_graph=retain_graph,
         )
         for grad_acc, dw in zip(param_group["params"], dweights):

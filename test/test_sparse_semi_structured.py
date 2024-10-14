@@ -42,7 +42,7 @@ from torch.testing._internal.inductor_utils import HAS_GPU
 
 import pytest
 
-SEMI_STRUCTURED_SUPPORTED_BACKENDS = dict()
+SEMI_STRUCTURED_SUPPORTED_BACKENDS = {}
 
 _IS_SM8X = False
 _IS_SM9X = False
