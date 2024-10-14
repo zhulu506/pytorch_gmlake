@@ -3,9 +3,6 @@
 #include <c10/core/Device.h>
 #include <c10/core/Stream.h>
 #include <c10/core/Allocator.h>
-#include <c10/core/Storage.h>
-#include <c10/core/DeviceGuard.h>
-
 C10_DIAGNOSTIC_PUSH_AND_IGNORED_IF_DEFINED("-Wunused-parameter")
 namespace at {
 
@@ -60,16 +57,6 @@ struct TORCH_API AcceleratorHooksInterface {
 
   virtual Device getDeviceFromPtr(void* data) const {
     TORCH_CHECK(false, "Backend doesn't support getDeviceFromPtr()");
-  }
-
-  virtual const Generator& getDefaultGenerator(
-      C10_UNUSED DeviceIndex device_index = -1) const {
-    TORCH_CHECK(false, "Backend doesn`t support getDefaultGenerator()");
-  }
-
-  virtual Generator getNewGenerator(
-      C10_UNUSED DeviceIndex device_index = -1) const {
-    TORCH_CHECK(false, "Backend doesn`t support getNewGenerator()");
   }
 
   virtual std::tuple<size_t, size_t, ptrdiff_t, std::string, std::string, std::string, uint64_t, bool>
