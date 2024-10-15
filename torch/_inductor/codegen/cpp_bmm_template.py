@@ -1,6 +1,6 @@
 # mypy: allow-untyped-defs
 import contextlib
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from unittest.mock import patch
 
 from .. import ir, lowering as L
@@ -11,32 +11,32 @@ from .cpp_gemm_template import (
     get_padded_n,
     MICROKERNEL_DEF,
 )
-
 from .cpp_micro_gemm import LayoutType
 from .cpp_template_kernel import CppTemplateKernel
 from .cpp_utils import DTYPE_TO_CPP, GemmBlocking
 
+
 GEMM_SINGLE_THREAD_MM_STUB = r"""
-{{kernel.def_function_with_name(
-    function_name="single_thread_mm",
-    placeholder="<SINGLE_THREAD_MM>",
+{{kernel.def_kernel(
     inputs={"X": X, "W": W},
     outputs={"Y": Y},
-    aliases=aliases)}}"""
+    aliases=aliases,
+    function_name="single_thread_mm",
+    placeholder="<SINGLE_THREAD_MM>")}}"""
 
 GEMM_THREADED_MM_STUB = r"""
-{{kernel.def_function_with_name(
-    function_name="threaded_mm",
-    placeholder="<THREADED_MM>",
+{{kernel.def_kernel(
     inputs={"X": X, "W": W},
     outputs={"Y": Y},
-    aliases=aliases)}}"""
+    aliases=aliases,
+    function_name="threaded_mm",
+    placeholder="<THREADED_MM>")}}"""
 
 BMM_WRAPPER = r"""
 extern "C"
 {{kernel.def_kernel(inputs={"X": BX, "W": BW}, outputs={"Y": BY}, aliases=aliases)}}
 {
-    const int64_t B = {{kernel.size(BY, -3, unwrapped=True)}};
+    const int64_t B = {{kernel.size(BY, 0)}};
     {%- if num_threads > 1 %}
     constexpr int64_t num_threads = {{num_threads}};
     int64_t B_single_thread_block = (B / num_threads) * num_threads;
@@ -46,19 +46,23 @@ extern "C"
     int64_t B_single_thread_block = B;
     {%- endif %}
     for (int64_t b_start = 0; b_start < B_single_thread_block; ++b_start) {
-        {{kernel.get_function_call(
+        {{template.get_gemm_function_call(
+            kernel,
             "single_thread_mm",
             "<SINGLE_THREAD_CALL>",
-            indexer_dims=["b_start", 0, 0],
+            first_index="b_start",
             nodes=[BX,BW,BY],
+            epilogue_nodes=epilogue_nodes,
         )}}
     }
     for (int64_t b_start = B_single_thread_block; b_start < B; ++b_start) {
-        {{kernel.get_function_call(
+        {{template.get_gemm_function_call(
+            kernel,
             "threaded_mm",
             "<THREADED_MM_CALL>",
-            indexer_dims=["b_start", 0, 0],
+            first_index="b_start",
             nodes=[BX,BW,BY],
+            epilogue_nodes=epilogue_nodes,
         )}}
     }
 }
@@ -133,6 +137,50 @@ class CppBmmTemplate(CppGemmTemplate):
             )
             W = CppBmmTemplate.realize_permuted_irnode(W)
         return W
+
+    def get_gemm_function_call(
+        self,
+        kernel: CppTemplateKernel,
+        function_name: str,
+        placeholder: str,
+        first_index: int,
+        nodes: List[Union[ir.Buffer, ir.MutableBox]],
+        epilogue_nodes: List[Union[ir.Buffer, ir.MutableBox]] = [],
+    ) -> str:
+        """
+        Similar to 'def_kernel' in cpp_template_kernel, but instead of generating a function definition,
+        generate a function call for the GEMM kernel.
+        Args:
+            placeholder: The string to replace the function call with
+            first_index: The index for slicing the 3D batch tensors
+            nodes: The 3D batch tensors
+        """
+        node_names = [node.get_name() for node in nodes]
+        epilogue_dict = {node.name: e_node for e_node in epilogue_nodes for node in e_node.origin_node.args}
+
+        def hook():
+            call_args, buffer_names, _, _ = kernel.args.python_argdefs()
+            indexed_params = []
+            for arg, buf in zip(call_args, buffer_names):
+                if buf in node_names:
+                    node = nodes[node_names.index(buf)]
+                    ind_dims = [first_index] + [0] * (len(node.shape) - 1)
+                    indexed_arg = kernel.index(node, ind_dims)
+                    indexed_arg = indexed_arg.split("[")[1]
+                    arg = f"&({arg}[{indexed_arg})"
+                elif buf in epilogue_dict:
+                    epilogue_node = epilogue_dict[buf]
+                    ind_dims = [first_index] + [0] * (len(epilogue_node.shape) - 1)
+                    indexed_arg = kernel.index(epilogue_node, ind_dims)
+                    indexed_arg = indexed_arg.split("[")[1]
+                    arg = f"&({arg}[{indexed_arg})"
+                indexed_params.append(arg)
+            params = ", ".join(indexed_params)
+            return f"{function_name}({params});"
+
+        assert placeholder not in kernel.render_hooks
+        kernel.render_hooks[placeholder] = hook
+        return placeholder
 
     def get_default_reindexers(self, epilogue_nodes):
         def reindexer(args):

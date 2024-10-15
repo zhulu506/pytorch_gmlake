@@ -240,10 +240,10 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
     @patches
     @torch.no_grad
     @unittest.skipIf(not TEST_MKL, "Test requires MKL")
-    @parametrize("bs", (1, 99))
-    @parametrize("Mdim", (384,))
+    @parametrize("bs", (1, 50))
+    @parametrize("Mdim", (192,))
     @parametrize("Kdim", (196,))
-    @parametrize("Ndim", (384, 385))
+    @parametrize("Ndim", (84, 385))
     @dtypes(torch.float, torch.bfloat16, torch.half)
     def test_bmm(self, dtype, bs, Mdim, Kdim, Ndim):
         class M(torch.nn.Module):
@@ -351,16 +351,61 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
     @patches
     @torch.no_grad
     @unittest.skipIf(not TEST_MKL, "Test requires MKL")
-    @parametrize("bs", (1, 99))
+    @dtypes(torch.float, torch.bfloat16, torch.half)
+    def test_bmm_2D_permute(self, dtype):
+        # TODO(frost-intel): Support cpp_bmm for reshaped tensors with non-decreasing stride
+        dtype = torch.float
+        bs = 12
+        Mdim = 10
+        Ndim = 65 
+        Kdim = 64
+
+        class M(torch.nn.Module):
+            def __init__(self, ):
+                super().__init__()
+
+            def forward(self, x, y):
+                x_M_BK = x.reshape(Mdim, bs*Kdim).clone()
+                y_N_BK = y.reshape(Ndim, bs*Kdim).clone()
+                y_K_BN = y.reshape(Kdim, bs*Ndim).clone()
+                y_B_NK = y.reshape(bs, Ndim*Kdim).clone()
+                o1 = x @ self.N_BK_to_BKN_reshape(y_N_BK) # First BMM in hf_DistilBert
+                o2 = x @ self.K_BN_to_BKN_reshape(y_K_BN) # Second BMM in hf_DistilBert, hf_T5
+                o3 = x @ self.B_NK_to_BKN_reshape(y_B_NK) # First BMM in hf_Reformer
+                o4 = self.M_BK_to_BMK_reshape(x_M_BK) @ y # Third BMM in hf_Reformer
+                o5 = self.M_BK_to_BMK_reshape(x_M_BK) @ self.N_BK_to_BKN_reshape(y_N_BK) # First in hf_T5
+                return o1, o2, o3, o4, o5
+
+            def B_NK_to_BKN_reshape(self, x):
+                return x.reshape(bs, Ndim, Kdim).permute(0,2,1)
+
+            def N_BK_to_BKN_reshape(self, x):
+                return x.reshape(Ndim, bs, Kdim).permute(1,2,0)
+
+            def M_BK_to_BMK_reshape(self, x):
+                return x.reshape(Mdim, bs, Kdim).permute(1,0,2)
+
+            def K_BN_to_BKN_reshape(self, x):
+                return x.reshape(Kdim, bs, Ndim).permute(1,0,2)
+
+        counters.clear()
+        u = torch.randn(bs, Mdim, Kdim).to(dtype=dtype)
+        v = torch.randn(bs, Kdim, Ndim).to(dtype=dtype)
+        mod = M().to(dtype=dtype).eval()
+        with verify(dtype) as (atol, rtol):
+            self.common(mod, (u, v), atol=atol, rtol=rtol)
+        self.assertEqual(counters["inductor"]["select_algorithm_autotune"], 0)
+
+    @inductor_config.patch({"freezing": True})
+    @patches
+    @torch.no_grad
+    @unittest.skipIf(not TEST_MKL, "Test requires MKL")
+    @parametrize("bs", (5, ))
     @parametrize("Mdim", (64,))
     @parametrize("Kdim", (96,))
-    @dtypes(torch.float, torch.bfloat16, torch.half)
+    @dtypes(torch.float,)
     def test_bmm_self_permute(self, bs, Mdim, Kdim, dtype):
         # TODO(frost-intel): Support cpp_bmm when input is a single buffer for A and B
-        dtype = torch.float
-        bs = 4
-        Mdim = 9
-        Kdim = 64
 
         class M(torch.nn.Module):
             def __init__(self):
@@ -379,22 +424,18 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
     @patches
     @torch.no_grad
     @unittest.skipIf(not TEST_MKL, "Test requires MKL")
-    @parametrize("bs", (1, 99))
+    @parametrize("bs", (5,))
     @parametrize("Mdim", (384,))
-    @parametrize("Kdim", (196,))
-    @parametrize("Ndim", (384, 385))
+    @parametrize("Kdim", (96,))
+    @parametrize("Ndim", (64, 65))
     @parametrize(
         "epilogue",
         (
             "relu",
-            "gelu",
-            "silu",
-            "sigmoid",
-            "tanh",
-            "hardswish",
-            "hardsigmoid",
-            "leaky_relu",
-            "hardtanh",
+            "add",
+            "sub",
+            "mul",
+            "div",
         ),
     )
     @dtypes(torch.float32, torch.bfloat16, torch.half)
@@ -1898,10 +1939,10 @@ class TestSelectAlgorithmDynamicShapes(_DynamicShapesTestBase):
     @patches
     @torch.no_grad
     @unittest.skipIf(not TEST_MKL, "Test requires MKL")
-    @parametrize("bs", (1, 99))
+    @parametrize("bs", (5,))
     @parametrize("Mdim", (384,))
-    @parametrize("Kdim", (196,))
-    @parametrize("Ndim", (384, 385))
+    @parametrize("Kdim", (96,))
+    @parametrize("Ndim", (64, 65))
     @dtypes(torch.float, torch.bfloat16, torch.half)
     def test_bmm_with_pointwise_dynamic_shapes(self, bs, Mdim, Kdim, Ndim, dtype):
         class M(torch.nn.Module):

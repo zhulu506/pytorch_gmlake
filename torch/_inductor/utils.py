@@ -1290,7 +1290,22 @@ def _use_template_for_cpu(layout):
     return use_max_autotune() and layout.device.type == "cpu"
 
 
-def use_cpp_gemm_template(layout, mat1, mat2, mat2_transposed=False, require_constant_mat2=True):
+def use_cpp_bmm_template(layout, mat1, mat2):
+    def stride_is_decreasing(x):
+        x.freeze_layout()
+        stride = x.get_stride()
+        return all(not isinstance(stride[i], sympy.AtomicExpr) or stride[i] > stride[i + 1] for i in range(len(stride) - 1))
+
+    return (
+        use_cpp_gemm_template(layout, mat1, mat2, require_constant_mat2=False)
+        and stride_is_decreasing(mat1)
+        and stride_is_decreasing(mat2)
+    )
+
+
+def use_cpp_gemm_template(
+    layout, mat1, mat2, mat2_transposed=False, require_constant_mat2=True
+):
     from . import ir
     from .codegen.cpp_micro_gemm import create_micro_gemm
     from .codegen.cpp_utils import get_gemm_template_output_and_compute_dtype
@@ -1339,7 +1354,6 @@ def use_cpp_gemm_template(layout, mat1, mat2, mat2_transposed=False, require_con
         and is_last_dim_stride1(mat1)  # TODO(jgong5): support transposed input
         and isinstance(mat2, ir.StorageBox)
         and (mat2.is_module_buffer() or not require_constant_mat2)
-        and mat1.get_name() != mat2.get_name()
     )
 
 

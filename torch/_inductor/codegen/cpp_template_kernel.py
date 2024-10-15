@@ -51,14 +51,16 @@ class CppTemplateKernel(CppKernel):
             template.render(kernel=self, **kwargs), self.render_hooks
         ).finalize_all()
 
-    def def_function_with_name(
+    def def_kernel(
         self,
-        function_name: str,
-        placeholder: str,
         inputs: Dict[str, ir.Buffer],
         outputs: Dict[str, ir.Buffer],
         aliases: Optional[Dict[str, str]] = None,
-    ):
+        function_name: str = None,
+        placeholder: str = "<DEF_KERNEL>",
+    ) -> str:
+        if function_name is None:
+            function_name = str(self.kernel_name)
         for name, inp in inputs.items():
             if inp is not None:
                 self.args.input_buffers[inp.get_name()] = name
@@ -74,7 +76,7 @@ class CppTemplateKernel(CppKernel):
         unique_sizevars = {
             s
             for input in inputs.values()
-            if input is not None and not isinstance(input, ir.View)
+            if input is not None
             for sym in itertools.chain(input.get_size(), input.get_stride())
             if isinstance(sym, sympy.Expr)
             for s in sym.free_symbols
@@ -105,38 +107,6 @@ class CppTemplateKernel(CppKernel):
         self.render_hooks[placeholder] = hook
         return placeholder
 
-    def def_kernel(
-        self,
-        inputs: Dict[str, ir.Buffer],
-        outputs: Dict[str, ir.Buffer],
-        aliases: Optional[Dict[str, str]] = None,
-    ) -> str:
-        placeholder = "<DEF_KERNEL>"
-        return self.def_function_with_name(self.kernel_name, placeholder, inputs, outputs, aliases)
-
-    def get_function_call(self, function_name: str, placeholder: str, indexer_dims: List[Any]=[], nodes=None) -> str:
-        node_names = [node.get_name() for node in nodes]
-        def hook():
-            call_args, buffer_names, _, _ = self.args.python_argdefs()
-            indexed_params = []
-            for arg, buf in zip(call_args, buffer_names):
-                if len(indexer_dims) > 0 and buf in node_names:
-                    node = nodes[node_names.index(buf)]
-                    if len(indexer_dims) < len(node.shape):
-                        ind_dims = indexer_dims + [0]*(len(node.shape) - len(indexer_dims))
-                    else:
-                        ind_dims = indexer_dims
-                    indexed_arg = self.index(node, ind_dims)
-                    indexed_arg = indexed_arg.split('[')[1]
-                    arg = f"&({arg}[{indexed_arg})"
-                indexed_params.append(arg)
-            params = ", ".join(indexed_params)
-            return f"{function_name}({params});"
-
-        assert placeholder not in self.render_hooks
-        self.render_hooks[placeholder] = hook
-        return placeholder
-
     def call_kernel(self, name: str, node: ir.CppTemplateBuffer):
         wrapper = V.graph.wrapper_code
         _, call_args, arg_types = self.args.cpp_argdefs()
@@ -153,15 +123,11 @@ class CppTemplateKernel(CppKernel):
         else:
             raise NotImplementedError(f"Unsupported dtype: {node.get_dtype()}")
 
-    def size(self, node: ir.Buffer, dim: int, unwrapped=False) -> str:
-        sizes = node.get_size()
-        dim = dim if dim >= 0 else dim + len(sizes)
-        if unwrapped:
-            return str(self.rename_indexing(sizes[dim]))
-        return cexpr_index(self.rename_indexing(sizes[dim]))
+    def size(self, node: ir.Buffer, dim: int) -> str:
+        return cexpr_index(self.rename_indexing(node.get_size()[dim]))
 
     def stride(self, node: ir.Buffer, dim: int) -> str:
-        return cexpr_index(self.rename_indexing(node.layout.stride[dim]))
+        return cexpr_index(self.rename_indexing(node.get_stride()[dim]))
 
     def index(self, node: ir.Buffer, indices: List[Any]) -> str:
         indexer = node.layout.as_fixed().make_indexer()
@@ -175,9 +141,7 @@ class CppTemplateKernel(CppKernel):
         )
         return f"{inner_name}[{cexpr_index(index)}]"
 
-    def slice_nd(
-        self, node, ranges: List[Tuple[Any, Any]]
-    ) -> Union[ir.ReinterpretView, ir.SliceView]:
+    def slice_nd(self, node, ranges: List[Tuple[Any, Any]]) -> ir.ReinterpretView:
         """
         Slice the given node with a list of ranges (start and end) corresponding to its dims.
         The dim is not sliced if the corresponding range is empty.
@@ -190,23 +154,13 @@ class CppTemplateKernel(CppKernel):
             assert len(_range) == 2
             start, end = parse_expr_with_index_symbols(_range)
             sliced = L.slice_(sliced, dim, start, end, clamp=False)
-        if isinstance(sliced.data, ir.SliceView):
-            layout = sliced.get_layout()
-            layout_size = len(sliced.data.shape)
-            layout = ir.FixedLayout(
-                layout.device,
-                layout.dtype,
-                sliced.data.shape,
-                layout.stride[-layout_size:],
-            )
-            sliced.data.layout = layout
-        assert isinstance(sliced.data, (ir.ReinterpretView, ir.SliceView)), sliced.data
+        assert isinstance(sliced.data, ir.ReinterpretView), sliced.data
         return sliced.data
 
-    def select(self, node, dim: int, idx: int) -> Union[ir.ReinterpretView, ir.View]:
+    def select(self, node, dim: int, idx: int) -> ir.ReinterpretView:
         wrapped_node = wrap_with_tensorbox(node)
         sliced = L.select(wrapped_node, dim, idx)
-        assert isinstance(sliced.data, (ir.ReinterpretView, ir.View)), sliced.data
+        assert isinstance(sliced.data, ir.ReinterpretView), sliced.data
         return sliced.data
 
     def view(self, node, sizes: List[Any]) -> ir.View:
