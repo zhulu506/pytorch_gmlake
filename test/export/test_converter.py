@@ -105,6 +105,7 @@ class TestConverter(TestCase):
             converter = TS2EPConverter(ts_model, inp)
             ep = converter.convert()
             ep_list.append(ep)
+
             for _ in range(num_iterations):
                 orig_out, _ = pytree.tree_flatten(original_ts_model(*inp))
                 ep_out, _ = pytree.tree_flatten(ep.module()(*inp))
