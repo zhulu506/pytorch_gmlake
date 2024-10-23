@@ -599,7 +599,7 @@ class ShapesCollection:
     Used to assign dynamic shape specifications to tensors that appear in inputs.
 
     Example::
-        args = ({"x": tensor_x, "others": [tensor_y, tensor_z]})
+        args = {"x": tensor_x, "others": [tensor_y, tensor_z]}
 
         dim = torch.export.Dim(...)
         dynamic_shapes = torch.export.ShapesCollection()
@@ -879,7 +879,8 @@ def _process_dynamic_shapes(
                 i,
                 dim.__name__,
                 StrictMinMaxConstraint(
-                    vr=ValueRanges(lower=dim.value, upper=dim.value), warn_only=False  # type: ignore[attr-defined]
+                    vr=ValueRanges(lower=dim.value, upper=dim.value),  # type: ignore[attr-defined]
+                    warn_only=False,
                 ),
             )
         else:
@@ -889,7 +890,8 @@ def _process_dynamic_shapes(
                 i,
                 dim.__name__,
                 StrictMinMaxConstraint(
-                    vr=ValueRanges(lower=dim.min, upper=dim.max), warn_only=False  # type: ignore[attr-defined]
+                    vr=ValueRanges(lower=dim.min, upper=dim.max),  # type: ignore[attr-defined]
+                    warn_only=False,
                 ),
             )
         return constraint
@@ -969,7 +971,7 @@ def _process_dynamic_shapes(
 
 
 def _get_dim_name_mapping(
-    dynamic_shapes: Union[Dict[str, Any], Tuple[Any], List[Any], None]
+    dynamic_shapes: Union[Dict[str, Any], Tuple[Any], List[Any], None],
 ):
     name_to_dim = {}
     for dim in tree_flatten(
