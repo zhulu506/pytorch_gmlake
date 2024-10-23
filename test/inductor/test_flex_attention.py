@@ -36,14 +36,18 @@ from torch.testing._internal.common_device_type import (
     flex_attention_supported_platform as supported_platform,
 )
 from torch.testing._internal.common_utils import TEST_WITH_ROCM
-from torch.utils._triton import has_triton
+from torch.testing._internal.inductor_utils import HAS_CUDA_TRITON
 
+
+# Skip tests if Triton is not available
+supported_platform = skipUnless(
+    HAS_CUDA_TRITON,
+    "Requires triton and a compatible CUDA device",
+)
 
 # Use this decorator only when hitting Triton bugs on H100
 running_on_a100_only = skipUnless(
-    torch.cuda.is_available()
-    and has_triton()
-    and torch.cuda.get_device_capability() == (8, 0),
+    HAS_CUDA_TRITON and torch.cuda.get_device_capability() == (8, 0),
     "Requires A100 and Triton",
 )
 

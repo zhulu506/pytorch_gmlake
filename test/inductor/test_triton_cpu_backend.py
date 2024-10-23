@@ -2,7 +2,7 @@
 from torch._inductor import config
 from torch._inductor.test_case import run_tests
 from torch.testing._internal.inductor_utils import HAS_CPU
-from torch.utils._triton import has_triton
+from torch.utils._triton import has_triton_package
 
 
 try:
@@ -10,7 +10,7 @@ try:
 except ImportError:
     import test_torchinductor
 
-if has_triton():
+if has_triton_package():
     import triton
 
     TRITON_HAS_CPU = "cpu" in triton.backends.backends

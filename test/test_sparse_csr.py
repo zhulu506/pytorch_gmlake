@@ -3530,10 +3530,10 @@ class TestSparseCSR(TestCase):
 
 
 def skipIfNoTriton(cls):
-    from torch.utils._triton import has_triton
+    from torch.utils._triton import has_triton_package
 
     # no-op if triton is present
-    if has_triton():
+    if has_triton_package():
         return cls
     else:
 

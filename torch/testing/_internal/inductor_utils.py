@@ -12,7 +12,8 @@ import torch._inductor.async_compile  # noqa: F401 required to warm up AsyncComp
 from torch._inductor.codecache import CppCodeCache
 from torch._inductor.utils import get_gpu_shared_memory, is_big_gpu
 from torch._inductor.utils import GPU_TYPES, get_gpu_type
-from torch.utils._triton import has_triton
+from torch._inductor.scheduler import get_scheduling_for_device
+from torch.utils._triton import has_triton_package
 from torch.testing._internal.common_utils import (
     LazyVal,
     IS_FBCODE,
@@ -22,6 +23,7 @@ from torch.testing._internal.common_utils import (
     IS_CI,
     IS_WINDOWS,
 )
+from torch._dynamo.device_interface import get_interface_for_device
 
 log: logging.Logger = logging.getLogger(__name__)
 
@@ -39,11 +41,31 @@ def test_cpu():
 
 HAS_CPU = LazyVal(test_cpu)
 
-HAS_TRITON = has_triton()
+HAS_TRITON = has_triton_package()
 
-HAS_CUDA = torch.cuda.is_available() and HAS_TRITON
+def has_inductor_available(device_type: str) -> bool:
+    try:
+        scheduling_factory = get_scheduling_for_device(device_type)
+        if scheduling_factory is None:
+            return False
+        scheduling_factory(None).check_if_available(None)
+        return True
+    except RuntimeError:
+        return False
 
-HAS_XPU = torch.xpu.is_available() and HAS_TRITON
+def has_triton_backend_available(device_type: str) -> bool:
+    try:
+        di = get_interface_for_device(device_type)
+        di.check_if_triton_available(None)
+        return True
+    except (NotImplementedError, RuntimeError):
+        return False
+
+HAS_CUDA = torch.cuda.is_available() and has_inductor_available("cuda")
+HAS_CUDA_TRITON = HAS_CUDA and has_triton_backend_available("cuda")
+
+HAS_XPU = torch.xpu.is_available() and has_inductor_available("xpu")
+HAS_XPU_TRITON = HAS_XPU and has_triton_backend_available("xpu")
 
 HAS_GPU = HAS_CUDA or HAS_XPU
 

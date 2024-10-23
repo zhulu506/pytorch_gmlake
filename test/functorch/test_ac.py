@@ -6,12 +6,15 @@ from math import prod
 import torch
 import torch._functorch.config as config
 from torch.testing._internal.common_utils import run_tests, TEST_WITH_ROCM, TestCase
-from torch.testing._internal.inductor_utils import HAS_CUDA
-from torch.utils._triton import has_triton
+from torch.testing._internal.inductor_utils import (
+    HAS_CUDA,
+    HAS_CUDA_TRITON,
+    has_triton_package,
+)
 from torch.utils.flop_counter import FlopCounterMode, register_flop_formula
 
 
-if has_triton():
+if has_triton_package():
     # note: if we only import triton in the test, the test fails:
     # def relu_kernel_(inp_ptr, out_ptr, sz, BLOCK_SIZE: tl.constexpr):
     # NameError('tl is not defined')
@@ -194,7 +197,9 @@ class MemoryBudgetTest(TestCase):
                 self.assertEqual(mem, mem_achieved)
 
     # needs CUDA, but this test file all needs CUDA.
-    @unittest.skipIf(not has_triton(), "test needs triton")
+    @unittest.skipIf(
+        not HAS_CUDA_TRITON, "Requires triton and a compatible CUDA device"
+    )
     def test_custom_triton_kernel(self):
         @triton.jit
         def relu_kernel_(inp_ptr, out_ptr, sz, BLOCK_SIZE: tl.constexpr):

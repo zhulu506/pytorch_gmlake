@@ -33,7 +33,6 @@ from torch.profiler import (
     record_function,
     supported_activities,
 )
-from torch.testing._internal.common_cuda import TEST_CUDA
 from torch.testing._internal.common_device_type import instantiate_device_type_tests
 from torch.testing._internal.common_utils import (
     IS_WINDOWS,
@@ -43,7 +42,7 @@ from torch.testing._internal.common_utils import (
     TEST_HPU,
     TestCase,
 )
-from torch.utils._triton import has_triton
+from torch.testing._internal.inductor_utils import HAS_CUDA_TRITON
 
 
 Json = Dict[str, Any]
@@ -241,7 +240,9 @@ class TestExecutionTrace(TestCase):
     @unittest.skipIf(
         sys.version_info >= (3, 12), "torch.compile is not supported on python 3.12+"
     )
-    @unittest.skipIf(not TEST_CUDA or not has_triton(), "need CUDA and triton to run")
+    @unittest.skipIf(
+        not HAS_CUDA_TRITON, "Requires triton and a compatible CUDA device"
+    )
     @skipIfHpu
     def test_execution_trace_with_pt2(self, device):
         @torchdynamo.optimize("inductor")

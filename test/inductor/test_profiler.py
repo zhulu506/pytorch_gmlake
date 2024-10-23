@@ -9,15 +9,14 @@ import torch._inductor.utils
 from torch._inductor import config
 from torch.profiler import ProfilerActivity
 from torch.testing._internal.common_utils import TemporaryFileName
-from torch.testing._internal.inductor_utils import HAS_CUDA
-from torch.utils._triton import has_triton
-
-
-HAS_TRITON = has_triton()
+from torch.testing._internal.inductor_utils import HAS_CUDA_TRITON
 
 
 class DynamoProfilerTests(torch._inductor.test_case.TestCase):
-    @unittest.skipIf(not HAS_TRITON, "requires cuda & triton")
+    @unittest.skipIf(
+        not HAS_CUDA_TRITON,
+        "Requires triton and a compatible CUDA device",
+    )
     def test_inductor_profiling_triton_launch(self):
         # Verify that we get some sort of CPU-side indication of triton kernel launches
         # in the profile traces. Currently, those appear as `cuLaunchKernel`. If this
@@ -87,7 +86,10 @@ class DynamoProfilerTests(torch._inductor.test_case.TestCase):
         )
         return prof.events()
 
-    @unittest.skipIf(not HAS_TRITON, "requires cuda & triton")
+    @unittest.skipIf(
+        not HAS_CUDA_TRITON,
+        "Requires triton and a compatible CUDA device",
+    )
     def test_inductor_profiling_kernel_names_pointwise(self):
         def fn(x, y):
             return (x + y).sin().cos()
@@ -102,7 +104,10 @@ class DynamoProfilerTests(torch._inductor.test_case.TestCase):
                 self.assertTrue(event.input_shapes == [[4, 4], [4, 4], [4, 4], []])
         self.assertTrue(event_found)
 
-    @unittest.skipIf(not HAS_TRITON, "requires cuda & triton")
+    @unittest.skipIf(
+        not HAS_CUDA_TRITON,
+        "Requires triton and a compatible CUDA device",
+    )
     def test_inductor_profiling_kernel_names_template(self):
         with config.patch(
             {"max_autotune": True, "max_autotune_gemm_backends": "TRITON"}
@@ -135,7 +140,10 @@ class DynamoProfilerTests(torch._inductor.test_case.TestCase):
                     self.assertTrue(event.input_shapes == [[4, 4], [4, 4], [4, 4]])
             self.assertTrue(event_found)
 
-    @unittest.skipIf(not HAS_TRITON, "requires cuda & triton")
+    @unittest.skipIf(
+        not HAS_CUDA_TRITON,
+        "Requires triton and a compatible CUDA device",
+    )
     def test_inductor_profiling_kernel_names_foreach(self):
         with config.patch(
             {"max_autotune": True, "max_autotune_gemm_backends": "TRITON"}
@@ -170,7 +178,10 @@ class DynamoProfilerTests(torch._inductor.test_case.TestCase):
                     )
             self.assertTrue(event_found)
 
-    @unittest.skipIf(not HAS_TRITON, "requires cuda & triton")
+    @unittest.skipIf(
+        not HAS_CUDA_TRITON,
+        "Requires triton and a compatible CUDA device",
+    )
     def test_inductor_profiling_triton_hooks(self):
         from triton.compiler import CompiledKernel  # @manual
 
@@ -202,5 +213,5 @@ class DynamoProfilerTests(torch._inductor.test_case.TestCase):
 if __name__ == "__main__":
     from torch._inductor.test_case import run_tests
 
-    if HAS_CUDA:
+    if HAS_CUDA_TRITON:
         run_tests()

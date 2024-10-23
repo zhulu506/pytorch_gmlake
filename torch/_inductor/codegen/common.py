@@ -19,6 +19,7 @@ from typing import (
     NamedTuple,
     Optional,
     Tuple,
+    TypeAlias,
     Union,
 )
 
@@ -182,6 +183,9 @@ class SizeArg:
         return None
 
 
+_SchedulingFactory: TypeAlias = Callable[..., torch._inductor.scheduler.BaseScheduling]
+
+
 @dataclasses.dataclass
 class TMADescriptorArg:
     name: str
@@ -189,7 +193,7 @@ class TMADescriptorArg:
 
 @dataclasses.dataclass
 class DeviceCodegen:
-    scheduling: Any
+    scheduling: _SchedulingFactory
     wrapper_codegen: type
     cpp_wrapper_codegen: type = type(None)
 
@@ -318,8 +322,12 @@ def has_backend_feature(device, feature):
     return feature in get_backend_features(device)
 
 
-def get_scheduling_for_device(device: str):
-    return device_codegens[device].scheduling if device in device_codegens else None
+def get_scheduling_for_device(device_type: str) -> Optional[_SchedulingFactory]:
+    return (
+        device_codegens[device_type].scheduling
+        if device_type in device_codegens
+        else None
+    )
 
 
 def get_wrapper_codegen_for_device(device: str, cpp_wrapper: bool = False):

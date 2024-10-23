@@ -3439,6 +3439,18 @@ class TritonScheduling(SIMDScheduling):
             }
         return cls.backend_features
 
+    @classmethod
+    def check_if_available(cls, device: torch.device) -> None:
+        if not has_triton_package():
+            raise RuntimeError(
+                "Cannot find a working Triton installation. More information on installing Triton "
+                "can be found at https://github.com/triton-lang/triton"
+            )
+
+        from torch._dynamo.device_interface import get_interface_for_device
+
+        get_interface_for_device(device).check_if_triton_available(device)
+
     def codegen_comment(self, node_schedule):
         wrapper = V.graph.wrapper_code
         origins, detailed_origins = get_kernel_metadata(node_schedule, wrapper)
