@@ -15279,7 +15279,7 @@ op_db: List[OpInfo] = [
                ),
            ),
            skips=(
-                DecorateInfo(
+               DecorateInfo(
                    toleranceOverride({torch.float16: tol(atol=5e-3, rtol=1e-3)}),
                    'TestInductorOpInfo', 'test_comprehensive',
                ),
