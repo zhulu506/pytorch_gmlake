@@ -69,6 +69,14 @@ from .utils import (
 zip = strict_zip
 
 
+if torch.distributed.is_available():
+    from torch.distributed._functional_collectives import AsyncCollectiveTensor
+
+    async_collective_tensor_type = AsyncCollectiveTensor
+else:
+    async_collective_tensor_type = None  # type: ignore[assignment, misc]
+
+
 class CompilerWrapper:
     """
     A wrapper around the inputs and outputs to the compiler_fn. We separate these into two parts:
@@ -1443,7 +1451,21 @@ class AOTDispatchAutograd:
             return x
 
         is_subclass: bool = is_traceable_wrapper_subclass(x)
-        mem_format = memory_format[0] if is_subclass else memory_format
+        mem_format = memory_format
+        if is_subclass:
+            memory_format_for_dense_tensor = not isinstance(memory_format, list)
+            if memory_format_for_dense_tensor and isinstance(
+                x, async_collective_tensor_type
+            ):
+                # This is AsyncCollectiveTensor, that we have not seen during tracing time.
+                while True:
+                    x = x.trigger_wait()
+                    # Checking recursive AsyncCollectiveTensor
+                    if not isinstance(x, async_collective_tensor_type):
+                        break
+                is_subclass = False
+            else:
+                mem_format = memory_format[0]
 
         if not x.is_contiguous(memory_format=mem_format):
             x = x.contiguous(memory_format=mem_format)
