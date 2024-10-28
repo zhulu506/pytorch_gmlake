@@ -1299,7 +1299,6 @@ def use_cpp_bmm_template(layout, mat1, mat2):
     return (
         use_cpp_gemm_template(layout, mat1, mat2, require_constant_mat2=False)
         and stride_is_decreasing(mat1)
-        and stride_is_decreasing(mat2)
     )
 
 

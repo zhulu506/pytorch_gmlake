@@ -571,8 +571,9 @@ class CppGemmTemplate(CppTemplate):
         return k_blocks > thread_blocking.block_k
 
     @classmethod
-    def _get_params_for_choices(
+    def add_choices(
         cls,
+        choices,
         layout,
         input_nodes,
         beta=1,
@@ -598,15 +599,14 @@ class CppGemmTemplate(CppTemplate):
                     inputs[inp_idx],
                     *[inputs[idx] for idx in input_indices[3:]],
                 ], layout_or_out
-            elif len(inputs) >= 2:
+            elif len(inputs) >= len(input_indices):
                 assert len(input_indices) >= 2
                 return [inputs[idx] for idx in input_indices], layout_or_out
             else:
-                return [inputs[0]] * len(input_indices), layout_or_out
+                return [inputs[0]] * len(input_indices), layout_or_out #Assumes the first input is the only input
 
         new_inputs, new_layout = reorder_and_filter(input_nodes, layout)
-        assert new_inputs[1].get_name() in V.graph.constants
-        is_mkldnn_wgt = V.graph.constants[new_inputs[1].get_name()].is_mkldnn
+        is_mkldnn_wgt = new_inputs[1].get_name() in V.graph.constants and V.graph.constants[new_inputs[1].get_name()].is_mkldnn
         if is_mkldnn_wgt:
             # It shouldn't happen as viewing an mkldnn tensor, we can extend the
             # implementation if it does.
@@ -625,8 +625,6 @@ class CppGemmTemplate(CppTemplate):
             return new_inputs, layout_or_out
 
         def normalize_shapes(inputs, layout_or_out):
-            if not trans_w:
-                return inputs, layout_or_out
             new_inputs = list(inputs)
             if not is_mkldnn_wgt and isinstance(new_inputs[1], torch.Tensor):
                 # With the assumptation that W is the storage of unwrap view
@@ -682,84 +680,6 @@ class CppGemmTemplate(CppTemplate):
             num_threads=num_threads,
         )
         assert micro_gemm is not None
-        _, block_n, _ = micro_gemm.register_blocking
-        padded_n = get_padded_n(n, block_n)
-
-        def pack_weight(inputs, layout_or_out):
-            W = inputs[1]
-            new_inputs = list(inputs)
-            blocked_w: Union[ir.IRNode, torch.Tensor] = W
-            if isinstance(W, ir.IRNode):
-                new_size = [padded_n // block_n, k, block_n]
-                blocked_w = ir.Buffer(
-                    name=W.get_name(),  # Borrow the registered buffer name
-                    layout=ir.FixedLayout(
-                        W.get_device(),
-                        W.get_dtype(),
-                        new_size,
-                        ir.FlexibleLayout.contiguous_strides(new_size),
-                        0,
-                    ),
-                )
-            else:
-                blocked_w = (
-                    torch.nn.functional.pad(W, (0, padded_n - n))
-                    .reshape(k, padded_n // block_n, block_n)
-                    .transpose(0, 1)
-                    .contiguous()
-                )
-                if micro_gemm.get_b_layout() != LayoutType.NORMAL:
-                    layout_str = (
-                        "VNNI4"
-                        if micro_gemm.get_b_layout() == LayoutType.VNNI4
-                        else "VNNI2"
-                    )
-                    assert micro_gemm.get_b_layout() in [
-                        LayoutType.VNNI2,
-                        LayoutType.VNNI4,
-                    ], f"We only support {layout_str} for now"
-                    vnni_size = (
-                        4 if micro_gemm.get_b_layout() == LayoutType.VNNI4 else 2
-                    )
-                    assert (
-                        k % vnni_size == 0
-                    ), f"k should be divisible by vnni_size for {layout_str} layout"
-                    blocked_w = (
-                        blocked_w.view(
-                            padded_n // block_n, k // vnni_size, vnni_size, block_n
-                        )
-                        .transpose(-1, -2)
-                        .contiguous()
-                        .view(padded_n // block_n, k, block_n)
-                    )
-                # normalize stride to be "contiguous_strides" per size
-                # this avoids the problems in L.view during template codegen
-                new_stride = [1]
-                for sz in reversed(blocked_w.shape[1:]):
-                    new_stride.insert(0, new_stride[0] * sz)
-                blocked_w = blocked_w.as_strided(blocked_w.shape, new_stride)
-            new_inputs[1] = blocked_w
-
-            def _is_int8_gemm(inputs):
-                return (
-                    isinstance(inputs[0], ir.IRNode)
-                    and inputs[0].get_dtype() == torch.uint8
-                ) or (
-                    isinstance(inputs[0], torch.Tensor)
-                    and inputs[0].dtype == torch.uint8
-                )
-
-            if _is_int8_gemm(new_inputs):
-                BCompensate = None
-                if isinstance(W, ir.IRNode):
-                    BCompensate = V.graph.add_tensor_constant(
-                        V.graph.constants[W.get_name() + "_BMatrixCompens"],
-                        W.get_name() + "_BMatrixCompens",
-                    )
-                else:
-                    BCompensate = torch.sum(W.to_dense().to(torch.float), dim=0)  # type: ignore[assignment]
-                new_inputs.append(BCompensate)
-            return new_inputs, layout_or_out
 
         def preprocessor(inputs, layout):
             return cls.prep_weight(
@@ -837,7 +757,8 @@ class CppGemmTemplate(CppTemplate):
                 new_input_nodes, _ = reorder_and_filter(input_nodes, layout)
 
                 W_node = new_input_nodes[1]
-                if W_node.get_name() in V.graph.constants:
+                weight_is_constant = W_node.get_name() in V.graph.constants
+                if weight_is_constant:
                     W = V.graph.constants[W_node.get_name()]
                     new_input_nodes[1] = W
                 new_input_nodes, _ = cls.prep_weight(
@@ -847,8 +768,7 @@ class CppGemmTemplate(CppTemplate):
                 W_packed = new_input_nodes[1]
                 if weight_is_constant:
                     W_packed = V.graph.add_tensor_constant(W_packed)
-                W_packed_constant = V.graph.add_tensor_constant(W_packed)
-                new_input_nodes[1] = W_packed_constant
+                    new_input_nodes[1] = W_packed
 
                 # Prune unused tensors
                 prune_tensors(input_nodes, new_input_nodes)
@@ -857,9 +777,10 @@ class CppGemmTemplate(CppTemplate):
                 )
             return output
 
-        return dict(
-            preprocessor=preprocessor,
-            postprocessor=postprocessor,
+        template = DataProcessorTemplateWrapper(
+            cls,
+            preprocessor,
+            postprocessor,
             input_nodes=input_nodes,
             layout=layout,
             num_threads=num_threads,
@@ -869,6 +790,9 @@ class CppGemmTemplate(CppTemplate):
             has_bias=has_bias,
             epilogue_creator=epilogue_creator,
         )
+        template.maybe_append_choice(choices)
+        return template
+
 
     @staticmethod
     def get_padded_size(n, block_n, k, should_block_weight):
@@ -920,7 +844,8 @@ class CppGemmTemplate(CppTemplate):
                 isinstance(inputs[0], ir.IRNode)
                 and inputs[0].get_dtype() == torch.uint8
             ) or (
-                isinstance(inputs[0], torch.Tensor) and inputs[0].dtype == torch.uint8
+                isinstance(inputs[0], torch.Tensor)
+                and inputs[0].dtype == torch.uint8
             )
 
         if _is_int8_gemm(new_inputs):
@@ -939,8 +864,8 @@ class CppGemmTemplate(CppTemplate):
     def block_weight_irnode(W, new_size, padding):
         assert isinstance(W, ir.IRNode)
         blocked_w = ir.Buffer(
-            W.get_name(),  # Borrow the registered buffer name
-            ir.FixedLayout(
+            name=W.get_name(),  # Borrow the registered buffer name
+            layout=ir.FixedLayout(
                 W.get_device(),
                 W.get_dtype(),
                 new_size,
@@ -957,6 +882,7 @@ class CppGemmTemplate(CppTemplate):
             padded_w = CppGemmTemplate.realize_permuted_irnode(padded_w)
         else:
             padded_w = torch.nn.functional.pad(W, (0, padding))
+            padded_w = padded_w.contiguous()
         return padded_w
 
     @staticmethod
@@ -1012,33 +938,6 @@ class CppGemmTemplate(CppTemplate):
             vnni_view_size.insert(-1, vnni_size)
             W = W.view(vnni_view_size).transpose(-1, -2).contiguous().view(new_size)
         return W
-
-    @classmethod
-    def add_choices(
-        cls,
-        choices,
-        layout,
-        input_nodes,
-        beta=1,
-        alpha=1,
-        has_bias=False,
-        trans_w=False,
-        input_indices=None,
-        epilogue_creator: Optional[Callable[[ir.Buffer], ir.Pointwise]] = None,
-    ):
-        options = cls._get_params_for_choices(
-            layout=layout,
-            input_nodes=input_nodes,
-            beta=beta,
-            alpha=alpha,
-            has_bias=has_bias,
-            trans_w=trans_w,
-            input_indices=input_indices,
-            epilogue_creator=epilogue_creator,
-        )
-        template = DataProcessorTemplateWrapper(cls, **options)
-        template.maybe_append_choice(choices)
-        return template
 
     def get_default_reindexers(self, epilogue_nodes):
         return [None] * len(epilogue_nodes)
@@ -1211,7 +1110,7 @@ class CppGemmTemplate(CppTemplate):
                 Y_2d = Y
             else:
 
-                def get_reindexer(epilogue_node):
+                def get_reindexer(epilogue_node, default_reindexer=None):
                     # From template_buffer to epilogue_node_ordered (ordered by stride decreasingly, in dense format), for example:
                     #   template_buffer:
                     #       size (324, 512), stride (512, 1)
@@ -1231,6 +1130,8 @@ class CppGemmTemplate(CppTemplate):
                         size_with_stride_ordered_decreasingly,
                         template_buffer.get_size(),
                     )
+                    if default_reindexer:
+                        reshape_reindex = ir.fuse_reindexing(reshape_reindex, default_reindexer)
 
                     # From epilogue_node_ordered (ordered by stride decreasingly, in dense format) to epilogue_node, for example:
                     #   epilogue_node_ordered (ordered by stride decreasingly, in dense format):
@@ -1247,8 +1148,8 @@ class CppGemmTemplate(CppTemplate):
 
                     reindexer = ir.fuse_reindexing(stride_reindex, reshape_reindex)
                     return reindexer
-
-                reindexers.extend([get_reindexer(epilogue_node) for epilogue_node in epilogue_nodes])  # type: ignore[list-item]
+                default_reindexers = self.get_default_reindexers(epilogue_nodes)
+                reindexers.extend([get_reindexer(epilogue_node, default_reindexer) for epilogue_node, default_reindexer in zip(epilogue_nodes, default_reindexers)])  # type: ignore[list-item]
                 if isinstance(Y, ir.BaseView):
                     storage = ir.StorageBox(Y.unwrap_view())
                 else:

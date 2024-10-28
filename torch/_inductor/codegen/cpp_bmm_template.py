@@ -51,7 +51,7 @@ extern "C"
             "single_thread_mm",
             "<SINGLE_THREAD_CALL>",
             first_index="b_start",
-            nodes=[BX,BW,BY],
+            nodes=[BX,BW,BY_2d],
             epilogue_nodes=epilogue_nodes,
         )}}
     }
@@ -61,7 +61,7 @@ extern "C"
             "threaded_mm",
             "<THREADED_MM_CALL>",
             first_index="b_start",
-            nodes=[BX,BW,BY],
+            nodes=[BX,BW,BY_2d],
             epilogue_nodes=epilogue_nodes,
         )}}
     }
@@ -156,7 +156,13 @@ class CppBmmTemplate(CppGemmTemplate):
             nodes: The 3D batch tensors
         """
         node_names = [node.get_name() for node in nodes]
-        epilogue_dict = {node.name: e_node for e_node in epilogue_nodes for node in e_node.origin_node.args}
+        epilogue_dict = {node.name: e_node for e_node in epilogue_nodes for node in e_node.origin_node.args if hasattr(node, "name")}
+
+        def index_into_arg(arg, node):
+            ind_dims = [first_index] + [0] * (len(node.shape) - 1)
+            indexed_arg = kernel.index(node, ind_dims)
+            indexed_arg = indexed_arg.split("[")[1]
+            return f"&({arg}[{indexed_arg})"
 
         def hook():
             call_args, buffer_names, _, _ = kernel.args.python_argdefs()
@@ -164,16 +170,10 @@ class CppBmmTemplate(CppGemmTemplate):
             for arg, buf in zip(call_args, buffer_names):
                 if buf in node_names:
                     node = nodes[node_names.index(buf)]
-                    ind_dims = [first_index] + [0] * (len(node.shape) - 1)
-                    indexed_arg = kernel.index(node, ind_dims)
-                    indexed_arg = indexed_arg.split("[")[1]
-                    arg = f"&({arg}[{indexed_arg})"
+                    arg = index_into_arg(arg, node)
                 elif buf in epilogue_dict:
                     epilogue_node = epilogue_dict[buf]
-                    ind_dims = [first_index] + [0] * (len(epilogue_node.shape) - 1)
-                    indexed_arg = kernel.index(epilogue_node, ind_dims)
-                    indexed_arg = indexed_arg.split("[")[1]
-                    arg = f"&({arg}[{indexed_arg})"
+                    arg = index_into_arg(arg, epilogue_node)
                 indexed_params.append(arg)
             params = ", ".join(indexed_params)
             return f"{function_name}({params});"
@@ -211,6 +211,7 @@ class CppBmmTemplate(CppGemmTemplate):
 
         BX, BW, BY = options["X"], options["W"], options["Y"]
         options["BX"], options["BW"], options["BY"] = BX, BW, BY
+        options["BY_2d"] = options["Y_2d"]
         for kword in ["X", "W", "Y", "GemmOut", "Y_2d"]:
             options[kword] = kernel.select(options[kword], 0, 0)
         for kword in ["X", "W", "Y"]:
