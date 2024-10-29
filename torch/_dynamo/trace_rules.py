@@ -3219,6 +3219,8 @@ LEGACY_MOD_INLINELIST = {
     "torch.ao.quantization.quantizer.xnnpack_quantizer",
     "torch.export.unflatten",
     "torch.optim",
+    # compiled autograd
+    "torch._functorch._aot_autograd.runtime_wrappers",
 }
 
 if torch.distributed.is_available():

@@ -832,10 +832,13 @@ class BuiltinVariable(VariableTracker):
         elif len(handlers) == 1:
             (handler,) = handlers
 
+            if "add" in str(obj):
+                breakpoint()
             def builtin_dispatch(tx: "InstructionTranslator", args, kwargs):
                 rv = handler(tx, args, kwargs)
                 if rv:
                     return rv
+                breakpoint()
                 unimplemented(error_msg)
 
         else:
