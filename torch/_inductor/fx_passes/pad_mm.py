@@ -435,7 +435,7 @@ def should_pad_bench(
         ):
             return True
 
-        if isinstance(
+        if not isinstance(
             V.graph.scheduler.get_backend(mat1.device),
             (TritonScheduling, CUDACombinedScheduling),
         ):
