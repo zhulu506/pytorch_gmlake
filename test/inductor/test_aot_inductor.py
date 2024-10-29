@@ -114,8 +114,8 @@ def check_model(
 ):
     with torch.no_grad(), config.patch(
         {
-            "allow_stack_allocation": self.allow_stack_allocation,
-            "use_minimal_arrayref_interface": self.use_minimal_arrayref_interface,
+            "aot_inductor.allow_stack_allocation": self.allow_stack_allocation,
+            "aot_inductor.use_minimal_arrayref_interface": self.use_minimal_arrayref_interface,
         }
     ):
         torch.manual_seed(0)
@@ -147,8 +147,8 @@ def check_model_with_multiple_inputs(
 ):
     with torch.no_grad(), config.patch(
         {
-            "allow_stack_allocation": self.allow_stack_allocation,
-            "use_minimal_arrayref_interface": self.use_minimal_arrayref_interface,
+            "aot_inductor.allow_stack_allocation": self.allow_stack_allocation,
+            "aot_inductor.use_minimal_arrayref_interface": self.use_minimal_arrayref_interface,
         }
     ):
         torch.manual_seed(0)
@@ -174,8 +174,8 @@ def code_check_count(
 ):
     with torch.no_grad(), config.patch(
         {
-            "allow_stack_allocation": self.allow_stack_allocation,
-            "use_minimal_arrayref_interface": self.use_minimal_arrayref_interface,
+            "aot_inductor.allow_stack_allocation": self.allow_stack_allocation,
+            "aot_inductor.use_minimal_arrayref_interface": self.use_minimal_arrayref_interface,
         }
     ):
         so_path = torch._export.aot_compile(model, example_inputs)

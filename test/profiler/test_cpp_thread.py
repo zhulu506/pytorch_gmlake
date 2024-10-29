@@ -5,7 +5,7 @@ from unittest import skipIf
 
 import torch
 import torch.utils.cpp_extension
-from torch._environment import is_fbcode
+from torch._environment import is_fbcode  # @manual=//caffe2:torch_sources
 from torch.testing._internal.common_utils import IS_WINDOWS, run_tests, TestCase
 
 
