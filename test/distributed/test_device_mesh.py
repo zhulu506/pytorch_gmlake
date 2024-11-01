@@ -50,6 +50,30 @@ def _set_env_var(addr="localhost", port="25364", world_size=1, rank=0):
     os.environ["RANK"] = f"{rank}"
 
 
+class WithCommsTest(DTensorTestBase):
+    """
+    Test with_comms to make sure the decorator works as expected with or without parenthesis.
+
+    #TODO: this is probably not the best place to put this test, but just keeping it so we have
+    test coverage for the with_comms.
+    """
+
+    @with_comms
+    def test_with_comms(self):
+        with self.assertRaises(AssertionError):
+            self.assertTrue(False)
+
+    @with_comms(eager_init=True)
+    def test_with_comms_eager_init(self):
+        with self.assertRaises(AssertionError):
+            self.assertTrue(False)
+
+    @with_comms()
+    def test_with_comms_non_eager_init(self):
+        with self.assertRaises(AssertionError):
+            self.assertTrue(False)
+
+
 class DeviceMeshTestGlooBackend(DTensorTestBase):
     @property
     def backend(self):
@@ -262,11 +286,10 @@ class DeviceMeshTest(DTensorTestBase):
 
     @with_comms
     def test_set_mesh_dim_group_options(self):
-        device_type = "cuda" if torch.cuda.is_available() else "cpu"
         _mesh_resources._set_mesh_dim_group_options(1, "fake", None)
 
         mesh_tensor = torch.arange(4).reshape(2, 2)
-        mesh = DeviceMesh(device_type, mesh_tensor)
+        mesh = DeviceMesh(self.device_type, mesh_tensor)
         # Fake pg only have BackendType as BackendType::CUSTOM.
         self.assertEqual(mesh.get_group(1)._get_backend_name(), "custom")
 
@@ -646,7 +669,7 @@ class TestDeviceMeshGetItem(DTensorTestBase):
         cp_tp_mesh._flatten("dummy")
         self.assertEqual(mesh_3d["dummy"].mesh_dim_names[0], "dummy")
 
-    @with_comms(eager_init=True)
+    @with_comms
     def test_flatten_mesh_4d(self):
         mesh_shape = (2, 2, 2, 1)
         mesh_dim_names = ("dp_replicate", "dp_shard", "cp", "tp")
