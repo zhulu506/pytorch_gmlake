@@ -58,7 +58,7 @@ def has_triton_backend_available(device_type: str) -> bool:
         di = get_interface_for_device(device_type)
         di.check_if_triton_available(None)
         return True
-    except (NotImplementedError, RuntimeError):
+    except RuntimeError:
         return False
 
 HAS_CUDA = torch.cuda.is_available() and has_inductor_available("cuda")

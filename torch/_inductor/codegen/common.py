@@ -19,9 +19,10 @@ from typing import (
     NamedTuple,
     Optional,
     Tuple,
-    TypeAlias,
+    TYPE_CHECKING,
     Union,
 )
+from typing_extensions import TypeAlias
 
 import sympy
 from sympy.printing.printer import Printer
@@ -46,6 +47,10 @@ from ..utils import (
     unique,
 )
 from ..virtualized import ops, OpsHandler, OpsValue, ReductionType, StoreMode, V
+
+
+if TYPE_CHECKING:
+    from ..scheduler import BaseScheduling
 
 
 schedule_log = torch._logging.getArtifactLogger(__name__, "schedule")
@@ -184,7 +189,7 @@ class SizeArg:
         return None
 
 
-_SchedulingFactory: TypeAlias = Callable[..., torch._inductor.scheduler.BaseScheduling]
+_SchedulingFactory: TypeAlias = Callable[..., "BaseScheduling"]
 
 
 @dataclasses.dataclass
@@ -314,6 +319,7 @@ def get_backend_features(device: Union[torch.device, str]):
         device_type = device
         device = torch.device(device_type)
     scheduling = get_scheduling_for_device(device_type)
+    assert scheduling is not None
     return scheduling(None).get_backend_features(device)
 
 

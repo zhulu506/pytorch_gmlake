@@ -393,7 +393,7 @@ class CpuInterface(DeviceInterface):
         return True
 
     @staticmethod
-    def check_if_triton_available(device: _device_t = None) -> bool:
+    def check_if_triton_available(device: _device_t = None) -> None:
         import triton.backends
 
         if "cpu" not in triton.backends.backends:
