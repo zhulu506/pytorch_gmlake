@@ -228,6 +228,7 @@ def main() -> None:
     )
     if not is_dynamo_supported():
         warnings.warn("Dynamo is not supported on this platform. Skipping check.")
+        return
     for args in _SANITY_CHECK_ARGS:
         check_dynamo(*args)
     print("All required checks passed")
