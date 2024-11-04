@@ -151,10 +151,23 @@ def check_dynamo(backend, device, err_msg) -> None:
 
     try:
         import torch._dynamo as dynamo
-        from torch._inductor.codegen.common import get_scheduling_for_device
+        from torch._inductor.codegen.common import (
+            get_scheduling_for_device,
+            init_backend_registration,
+        )
+
+        # This is decorated with lru_cache so safe to use multiple times
+        init_backend_registration()
+
+        scheduling = get_scheduling_for_device(device)
+        if scheduling is None:
+            print(
+                f"WARNING: No Inductor scheduling factory registered for {device}. Skipping check."
+            )
+            return
 
         try:
-            get_scheduling_for_device(device).check_if_available(None)
+            scheduling(None).check_if_available(None)
         except RuntimeError as e:
             print(f"WARNING: Inductor not available for {device}: {e}. Skipping check.")
             return
@@ -213,10 +226,9 @@ def main() -> None:
         f"CUDA version: {cuda_ver}\n"
         f"ROCM version: {rocm_ver}\n"
     )
+    if not is_dynamo_supported():
+        warnings.warn("Dynamo is not supported on this platform. Skipping check.")
     for args in _SANITY_CHECK_ARGS:
-        if not is_dynamo_supported():
-            warnings.warn("Dynamo is not supported on this platform. Skipping check.")
-            continue
         check_dynamo(*args)
     print("All required checks passed")
 
