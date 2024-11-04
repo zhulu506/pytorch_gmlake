@@ -212,7 +212,10 @@ class DynamoProfilerTests(torch._inductor.test_case.TestCase):
         self.assertTrue(hooks_called["enter"])
         self.assertTrue(hooks_called["exit"])
 
-    @unittest.skipIf(not HAS_TRITON, "requires cuda & triton")
+    @unittest.skipIf(
+        not HAS_CUDA_TRITON,
+        "Requires triton and a compatible CUDA device",
+    )
     def test_pt2_triton_attributes(self):
         from torch._inductor.codecache import code_hash
 
