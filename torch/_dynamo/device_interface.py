@@ -242,7 +242,10 @@ class CudaInterface(DeviceInterface):
 
     @staticmethod
     def is_triton_capable(device: _device_t = None) -> bool:
-        return torch.cuda.get_device_properties(device).major >= 7
+        return (
+            torch.version.hip is None
+            or torch.cuda.get_device_properties(device).major >= 7
+        )
 
     @staticmethod
     def check_if_triton_available(device: _device_t = None) -> None:
@@ -257,8 +260,10 @@ class CudaInterface(DeviceInterface):
 
         import triton.backends
 
-        if "cuda" not in triton.backends.backends:
-            raise RuntimeError("triton not built with the 'cuda' backend")
+        if torch.version.hip is not None and "amd" not in triton.backends.backends:
+            raise RuntimeError("triton not built with the 'amd' backend")
+        elif "nvidia" not in triton.backends.backends:
+            raise RuntimeError("triton not built with the 'nvidia' backend")
 
 
 get_xpu_stream: Optional[Callable[[int], int]]
@@ -340,8 +345,8 @@ class XpuInterface(DeviceInterface):
     def check_if_triton_available(device: _device_t = None) -> None:
         import triton.backends
 
-        if "xpu" not in triton.backends.backends:
-            raise RuntimeError("triton not built with the 'xpu' backend")
+        if "intel" not in triton.backends.backends:
+            raise RuntimeError("triton not built with the 'intel' backend")
 
 
 @dataclass
