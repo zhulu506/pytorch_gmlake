@@ -243,7 +243,7 @@ class CudaInterface(DeviceInterface):
     @staticmethod
     def is_triton_capable(device: _device_t = None) -> bool:
         return (
-            torch.version.hip is None
+            torch.version.hip is not None
             or torch.cuda.get_device_properties(device).major >= 7
         )
 
@@ -260,8 +260,9 @@ class CudaInterface(DeviceInterface):
 
         import triton.backends
 
-        if torch.version.hip is not None and "amd" not in triton.backends.backends:
-            raise RuntimeError("triton not built with the 'amd' backend")
+        if torch.version.hip is not None:
+            if "amd" not in triton.backends.backends:
+                raise RuntimeError("triton not built with the 'amd' backend")
         elif "nvidia" not in triton.backends.backends:
             raise RuntimeError("triton not built with the 'nvidia' backend")
 
