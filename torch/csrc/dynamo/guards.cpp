@@ -966,6 +966,7 @@ class GuardDebugInfo {
 class GuardManager;
 class RootGuardManager;
 class DictGuardManager;
+bool run_diff_guard_set(RootGuardManager* root);
 
 /**
  * Base class for the leaf guard in the GuardManager hierarchy.
@@ -1701,6 +1702,10 @@ class GuardManager {
   // guards and does not change the fail count. For simplicity, we duplicate
   // the code here.
   virtual bool check_nopybind(PyObject* value) { // borrowed ref
+    if (run_diff_guard_set(_root) && !_in_diff_guard_set) {
+      // For run diff only guards, if the fail_count is 0, return right away;
+      return true;
+    }
 
     if (!this->check_leaf_guards_nopybind(value)) {
       return false;
@@ -1713,7 +1718,7 @@ class GuardManager {
     // Iterate over leaf guards
     for (const auto& guard : _leaf_guards) {
       if (!guard->check_nopybind(value)) { // early exit
-        _fail_count += 1;
+        this->_inc_fail_count();
         // no need of sorting, just return.
         return false;
       }
@@ -1738,7 +1743,7 @@ class GuardManager {
     bool failed_on_first = true;
     for (const auto& accessor : _accessors) {
       if (!accessor->check_nopybind(value, matches_dict_tag)) { // early exit
-        _fail_count += 1;
+        this->_inc_fail_count();
         result = false;
         // need to sort, so break the loop.
         break;
@@ -1879,10 +1884,27 @@ class GuardManager {
     GuardManager::add_leaf_guard(std::move(leaf_guard));
   }
 
+  void include_in_diff_guard_set() {
+    _in_diff_guard_set = true;
+  }
+
+  bool is_in_diff_guard_set() {
+    return _in_diff_guard_set;
+  }
+
  protected:
   // Keeps a count of how many times this guard manager check function returns
   // False. This is used for sorting optimization.
   int64_t _fail_count{0};
+
+  // Used by `torch.compiler.skip_guard_eval_unsafe` to run diff only guards to
+  // speedup cache lookup.
+  bool _in_diff_guard_set{false};
+
+  void _inc_fail_count() {
+    _fail_count += 1;
+    include_in_diff_guard_set();
+  }
 
  private:
   // Root of the guard manager, this is the used to install the relational
@@ -2065,6 +2087,14 @@ class RootGuardManager : public GuardManager {
     _init_local_state = true;
   }
 
+  void set_run_diff_guard_set() {
+    _run_diff_guard_set = true;
+  }
+
+  void unset_run_diff_guard_set() {
+    _run_diff_guard_set = false;
+  }
+
   // DEBUG function - Returning raw pointers because we can't return unique_ptr
   // and pybind does not accept a unique_ptr reference return type.
   std::vector<LeafGuard*> get_epilogue_lambda_guards() const {
@@ -2087,6 +2117,12 @@ class RootGuardManager : public GuardManager {
  public:
   // Local state for TENSOR_MATCH guards.
   LocalState _local_state;
+
+  // This flag when true runs only those guards that have failed in the previous
+  // runs. Essentially, this runs a minimal set of guard that differentiates
+  // different guards for a cache entry. If use can guarantee no more
+  // recompilations, this can drastically cut down the guard overhead.
+  bool _run_diff_guard_set = false;
 
  private:
   // All the relational guards under this guard mananger. We only use these
@@ -2126,6 +2162,10 @@ class RootGuardManager : public GuardManager {
   // We init LocalState only when this flag it set. This flag is set during
   // TENSOR_MATCH guard init.
   bool _init_local_state = false;
+};
+
+bool run_diff_guard_set(RootGuardManager* root) {
+  return root->_run_diff_guard_set;
 };
 
 /*
@@ -2187,12 +2227,12 @@ class DictGuardManager : public GuardManager {
     // TODO(janimesh) - Implement a fast-path using dict versions.
 
     if (Py_TYPE(obj) != _expected_type) {
-      _fail_count += 1;
+      this->_inc_fail_count();
       return false;
     }
 
     if (PyDict_Size(obj) != _size) {
-      _fail_count += 1;
+      this->_inc_fail_count();
       return false;
     }
 
@@ -2210,7 +2250,7 @@ class DictGuardManager : public GuardManager {
     // DICT_CONTAINS and DICT_VERSION as leaf guards offers a simpler solution
     // than embedding these functionalities within the DictGuardManager itself.
     if (!GuardManager::check_nopybind(obj)) {
-      _fail_count += 1;
+      this->_inc_fail_count();
       // No need to shuffle the child guards, just return.
       return false;
     }
@@ -2406,12 +2446,12 @@ class DictSubclassGuardManager : public DictGuardManager {
     // TODO(janimesh) - Implement a fast-path using dict versions.
 
     if (Py_TYPE(obj) != _expected_type) {
-      _fail_count += 1;
+      this->_inc_fail_count();
       return false;
     }
 
     if (PyDict_Size(obj) != _size) {
-      _fail_count += 1;
+      this->_inc_fail_count();
       return false;
     }
 
@@ -2421,7 +2461,7 @@ class DictSubclassGuardManager : public DictGuardManager {
     }
 
     if (!GuardManager::check_nopybind(obj)) { // NOLINT
-      _fail_count += 1;
+      this->_inc_fail_count();
       // No need to shuffle the child guards, just return.
       return false;
     }
@@ -3702,6 +3742,14 @@ bool run_root_guard_manager(void* root, PyObject* f_locals) {
   return ((RootGuardManager*)root)->check_nopybind(f_locals);
 }
 
+void set_run_diff_guard_set(void* root) {
+  ((RootGuardManager*)root)->set_run_diff_guard_set();
+}
+
+void unset_run_diff_guard_set(void* root) {
+  ((RootGuardManager*)root)->unset_run_diff_guard_set();
+}
+
 PyObject* torch_c_dynamo_guards_init() {
   // initialize TensorGuardsType
   TensorGuardsType.tp_name = "torch._C._dynamo.guards.TensorGuards";
@@ -3956,6 +4004,10 @@ PyObject* torch_c_dynamo_guards_init() {
   py::class_<GuardManager, std::unique_ptr<GuardManager>>(py_m, "GuardManager")
       // return by reference because GuardManager has the ownership of accessors
       .def("get_source", &GuardManager::get_source)
+      .def("fail_count", &GuardManager::fail_count)
+      .def(
+          "include_in_diff_guard_set", &GuardManager::include_in_diff_guard_set)
+      .def("is_in_diff_guard_set", &GuardManager::is_in_diff_guard_set)
       .def(
           "get_accessors",
           &GuardManager::get_accessors,
@@ -4361,6 +4413,7 @@ PyObject* torch_c_dynamo_guards_init() {
       py_m, "RootGuardManager")
       .def(py::init<>())
       .def("check", &RootGuardManager::check)
+      .def("fail_count", &RootGuardManager::fail_count)
       .def("check_verbose", &RootGuardManager::check_verbose)
       // return by reference because GuardManager has the ownership of leaf
       // guards

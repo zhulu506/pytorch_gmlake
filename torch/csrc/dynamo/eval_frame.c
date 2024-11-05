@@ -524,6 +524,25 @@ static PyObject* _custom_eval_frame_shim(
 static PyObject* skip_code_recursive_flag;
 static PyObject* cache_limit_hit_flag;
 
+
+// When this flag is turned on, cache lookup runs diff guard set to find the
+// compiled graph.
+static PyObject* run_diff_guard_set;
+
+static PyObject* set_run_diff_guard_set_flag_py(PyObject* dummy, PyObject* value) {
+  if (value != Py_True && value != Py_False) {
+    DEBUG_TRACE0("arg error");
+    PyErr_SetString(PyExc_TypeError, "expected True/False");
+    return NULL;
+  }
+  run_diff_guard_set = value;
+  Py_RETURN_NONE;
+}
+
+static PyObject* get_run_diff_guard_set_flag_py(PyObject* dummy, PyObject* args) {
+  return run_diff_guard_set;
+}
+
 // NOTE: In 3.12+, the frame evaluation function (callee) is responsible for clearing/popping
 // the frame, meaning that unless we default evaluate the original frame,
 // we are responsible for clearing it - via clear_old_frame_if_python_312_plus.
@@ -626,7 +645,7 @@ static PyObject* _custom_eval_frame(
     _PytorchRecordFunctionState* rf = _pytorch_record_function_enter(cache_lookup_profiler_str);
     PyObject* maybe_cached_code = NULL;
     const char* trace_annotation = "";
-    lookup(extra, locals, backend, &maybe_cached_code, &trace_annotation);
+    lookup(extra, locals, backend, &maybe_cached_code, &trace_annotation, false);
     _pytorch_record_function_exit(rf);
 
     Py_DECREF(locals);
@@ -656,6 +675,7 @@ static PyObject* _custom_eval_frame(
     *should_clear_frame = 1;
     return eval_custom_code(tstate, frame, cached_code, trace_annotation, throw_flag, 0);
   }
+
   DEBUG_CHECK(PyDict_CheckExact(locals));
   DEBUG_CHECK(PyDict_CheckExact(frame->f_globals));
   DEBUG_CHECK(PyDict_CheckExact(frame->f_builtins));
@@ -663,7 +683,7 @@ static PyObject* _custom_eval_frame(
   _PytorchRecordFunctionState* rf = _pytorch_record_function_enter(cache_lookup_profiler_str);
   PyObject* maybe_cached_code = NULL;
   const char* trace_annotation = "";
-  lookup(extra, locals, backend, &maybe_cached_code, &trace_annotation);
+  lookup(extra, locals, backend, &maybe_cached_code, &trace_annotation, PyObject_IsTrue(run_diff_guard_set));
   _pytorch_record_function_exit(rf);
   if (maybe_cached_code == NULL) {
     // Python error
@@ -680,6 +700,16 @@ static PyObject* _custom_eval_frame(
     Py_DECREF(locals);
     return eval_custom_code(tstate, frame, cached_code, trace_annotation, throw_flag, free_vars_copied);
   }
+  if (PyObject_IsTrue(run_diff_guard_set)) {
+    PyErr_SetString(
+      PyExc_RuntimeError,
+      "Could not find a compiled graph for skip_guard_eval_unsafe. "
+      "This usually means that the function is called with new inputs "
+      "(different from the warmup) such that it will force a recompilation."
+    );
+    return NULL;
+  }
+
   // cache miss
   CacheEntry* cache_entry = extract_cache_entry(extra);
   FrameState* frame_state = extract_frame_state(extra);
@@ -891,6 +921,8 @@ static PyObject* raise_sigtrap(PyObject* dummy, PyObject* obj) {
 }
 
 static PyMethodDef _methods[] = {
+    {"set_run_diff_guard_set_flag", set_run_diff_guard_set_flag_py, METH_O, NULL},
+    {"get_run_diff_guard_set_flag", get_run_diff_guard_set_flag_py, METH_NOARGS, NULL},
     {"set_eval_frame", set_eval_frame_py, METH_O, NULL},
     {"get_eval_frame_callback", get_eval_frame_callback_py, METH_NOARGS, NULL},
     {"reset_code", reset_code, METH_O, NULL},
@@ -943,6 +975,15 @@ PyObject* torch_c_dynamo_eval_frame_init(void) {
     return NULL;
   }
 #endif
+
+
+  run_diff_guard_set = Py_False;
+  Py_INCREF(run_diff_guard_set);  // Increment the reference count to hold a reference
+  if (PyModule_AddObject(module, "run_diff_guard_set", run_diff_guard_set) != 0) {
+    return NULL;
+  }
+
+
 
   skip_code_recursive_flag = PyObject_New(PyObject, &PyBaseObject_Type);
   if (skip_code_recursive_flag == NULL) {

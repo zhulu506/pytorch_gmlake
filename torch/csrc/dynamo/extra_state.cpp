@@ -31,6 +31,17 @@ void ExtraState::move_to_front(CacheEntry* cache_entry) {
       cache_entry->_owner_loc);
 }
 
+void ExtraState::move_front_to_back() {
+  CacheEntry* cache_entry = &this->cache_entry_list.front();
+  CHECK(cache_entry->_owner == this);
+  CHECK(!this->cache_entry_list.empty());
+  CHECK(cache_entry == &*cache_entry->_owner_loc);
+  this->cache_entry_list.splice(
+      this->cache_entry_list.end(),
+      this->cache_entry_list,
+      cache_entry->_owner_loc);
+}
+
 void ExtraState::invalidate(CacheEntry* cache_entry) {
   CHECK(cache_entry->_owner == this);
   CHECK(!this->cache_entry_list.empty());
@@ -114,18 +125,31 @@ void lookup(
     PyObject* f_locals,
     PyObject* backend,
     PyObject** maybe_cached_code,
-    const char** trace_annotation) {
+    const char** trace_annotation,
+    bool run_diff_guards) {
   size_t index = 0;
   CacheEntry* found = nullptr;
   py::handle locals(f_locals);
+  if (run_diff_guards && extra_state->cache_entry_list.size() > 1) {
+    // Move the first entry to the back. This is NOT a perf optimization, this
+    // is a necessity. It is possible that in the case of multiple cache
+    // entries, the first cache entry (which would be the latest recompile) does
+    // not have any guard managers with fail_count > 0. So, we just move it to
+    // the end.
+    extra_state->move_front_to_back();
+  }
   for (CacheEntry& cache_entry : extra_state->cache_entry_list) {
     // Check backend. Py_False means run only mode.
-
     bool valid =
         backend == Py_False || backend_match(cache_entry.backend, backend);
 
     if (valid) {
       try {
+        if (run_diff_guards) {
+          // Indicate to the guard manager to run diff guards only.
+          torch::dynamo::set_run_diff_guard_set(cache_entry.root_mgr);
+        }
+
         valid = torch::dynamo::run_root_guard_manager(
             cache_entry.root_mgr, f_locals);
       } catch (py::error_already_set& e) {
@@ -142,8 +166,17 @@ void lookup(
         // the exception
         e.restore();
         *maybe_cached_code = nullptr;
+
+        if (run_diff_guards) {
+          torch::dynamo::unset_run_diff_guard_set(cache_entry.root_mgr);
+          extra_state->move_front_to_back();
+        }
         return;
       }
+    }
+
+    if (run_diff_guards) {
+      torch::dynamo::unset_run_diff_guard_set(cache_entry.root_mgr);
     }
     if (valid) {
       found = &cache_entry;
@@ -152,7 +185,12 @@ void lookup(
     ++index;
   }
   if (found) {
-    extra_state->move_to_front(found);
+    if (run_diff_guards) {
+      // Undo the move_front_to_back() done at the beginning of this function.
+      extra_state->move_front_to_back();
+    } else {
+      extra_state->move_to_front(found);
+    }
     *maybe_cached_code = found->code.ptr();
     *trace_annotation = found->trace_annotation.c_str();
     return;

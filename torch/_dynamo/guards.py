@@ -292,6 +292,38 @@ class GuardManagerWrapper:
 
         visit(self.root)
 
+    def propagate_diff_guard_set(self):
+        """
+        At this point, some TENSOR_MATCH guards have been marked to include in
+        the diff guard set. This pass traverses the tree and recursively include
+        the parents of the TENSOR_MATCH guard manager in diff guard set.
+        """
+
+        def visit(mgr):
+            in_diff_guard_set = mgr.is_in_diff_guard_set()
+
+            if isinstance(mgr, DictGuardManager):
+                for _, (key_mgr, val_mgr) in sorted(
+                    mgr.get_key_value_managers().items()
+                ):
+                    if key_mgr:
+                        in_diff_guard_set |= visit(key_mgr)
+                    if val_mgr:
+                        in_diff_guard_set |= visit(val_mgr)
+            else:
+                for child_mgr in mgr.get_child_managers():
+                    in_diff_guard_set |= visit(child_mgr)
+
+            if in_diff_guard_set:
+                mgr.include_in_diff_guard_set()
+
+            return in_diff_guard_set
+
+        visit(self.root)
+
+    def finalize(self):
+        self.propagate_diff_guard_set()
+
 
 def from_numpy(a):
     # If not numpy array, piggy back on e.g. tensor guards to check type
@@ -1889,6 +1921,13 @@ class GuardBuilder(GuardBuilderBase):
                     verbose_code_parts,
                 )
 
+                if not istype(value, torch.nn.Parameter):
+                    # Include the guard manager with the TENSOR_MATCH leaf guard
+                    # in the diff guard set. This is used by
+                    # torch.compiler.skip_guard_eval_unsafe to run only diff
+                    # guard set + TENSOR_MATCH guards.
+                    guard_manager.include_in_diff_guard_set()
+
             # A frame is valid for reuse with dynamic dimensions if the new
             # (user-requested) dynamic dimensions are a subset of the old
             # (already compiled) dynamic dimensions.
@@ -2378,9 +2417,10 @@ class CheckFunctionManager:
             **_get_closure_vars(),
         }
 
-        globals_for_guard_fn = {"G": builder.scope["G"]}
+        self.guard_manager.finalize()
         # Guard manager construction is complete. Ensure we did not miss to
         # insert a guard in cpp guard manager.
+        globals_for_guard_fn = {"G": builder.scope["G"]}
         assert len(code_parts) == 0
 
         self.guard_manager.closure_vars = closure_vars
