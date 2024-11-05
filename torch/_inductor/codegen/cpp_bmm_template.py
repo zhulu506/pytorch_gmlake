@@ -3,7 +3,10 @@ import contextlib
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from unittest.mock import patch
 
+import sympy
+
 from .. import ir, lowering as L
+from ..select_algorithm import PartialRender
 from ..virtualized import V
 from .cpp_gemm_template import (
     CppGemmTemplate,
@@ -22,7 +25,8 @@ GEMM_SINGLE_THREAD_MM_STUB = r"""
     outputs={"Y": Y},
     aliases=aliases,
     function_name="single_thread_mm",
-    placeholder="<SINGLE_THREAD_MM>")}}"""
+    symbols=[b_index],
+    placeholder="<SINGLE_THREAD_DEF_MM_FOR_BMM>")}}"""
 
 GEMM_THREADED_MM_STUB = r"""
 {{kernel.def_kernel(
@@ -30,13 +34,14 @@ GEMM_THREADED_MM_STUB = r"""
     outputs={"Y": Y},
     aliases=aliases,
     function_name="threaded_mm",
-    placeholder="<THREADED_MM>")}}"""
+    symbols=[b_index],
+    placeholder="<THREADED_MM_DEF_FOR_BMM>")}}"""
 
 BMM_WRAPPER = r"""
 extern "C"
 {{kernel.def_kernel(inputs={"X": BX, "W": BW}, outputs={"Y": BY}, aliases=aliases)}}
 {
-    const int64_t B = {{kernel.size(BY, 0)}};
+    const int64_t B = {{kernel.size(BY_2d, 0)}};
     {%- if num_threads > 1 %}
     constexpr int64_t num_threads = {{num_threads}};
     int64_t B_single_thread_block = (B / num_threads) * num_threads;
@@ -49,20 +54,16 @@ extern "C"
         {{template.get_gemm_function_call(
             kernel,
             "single_thread_mm",
-            "<SINGLE_THREAD_CALL>",
-            first_index="b_start",
-            nodes=[BX,BW,BY_2d],
-            epilogue_nodes=epilogue_nodes,
+            "<SINGLE_THREAD_CALL_FOR_BMM>",
+            b_index="b_start",
         )}}
     }
     for (int64_t b_start = B_single_thread_block; b_start < B; ++b_start) {
         {{template.get_gemm_function_call(
             kernel,
             "threaded_mm",
-            "<THREADED_MM_CALL>",
-            first_index="b_start",
-            nodes=[BX,BW,BY_2d],
-            epilogue_nodes=epilogue_nodes,
+            "<THREADED_MM_CALL_FOR_BMM>",
+            b_index="b_start",
         )}}
     }
 }
@@ -95,6 +96,18 @@ class CppBmmTemplate(CppGemmTemplate):
         )
         # Value may be changed after micro_gemm is instantiated if using VNNI layout
         self.should_block_weights = False
+        self.b_index = sympy.Symbol("s_b_index", integer=True, nonnegative=True)
+        #self.b = layout.size[0]
+        #self.b_index = V.graph.sizevars.shape_env.create_symbol(
+        #    val=int(self.b),
+        #    source=TensorPropertySource(
+        #        base=LocalSource(local_name="bmm"), prop=TensorProperty.SIZE, idx=0
+        #    ),
+        #    constraint_dim=StrictMinMaxConstraint(
+        #        vr=ValueRanges(lower=0, upper=self.b),
+        #        warn_only=False,
+        #    ),
+        #)
 
     @staticmethod
     def get_padded_size(n, block_n, k, block_weight):
@@ -143,40 +156,23 @@ class CppBmmTemplate(CppGemmTemplate):
         kernel: CppTemplateKernel,
         function_name: str,
         placeholder: str,
-        first_index: int,
-        nodes: List[Union[ir.Buffer, ir.MutableBox]],
-        epilogue_nodes: List[Union[ir.Buffer, ir.MutableBox]] = [],
+        b_index: int,
     ) -> str:
         """
         Similar to 'def_kernel' in cpp_template_kernel, but instead of generating a function definition,
         generate a function call for the GEMM kernel.
         Args:
             placeholder: The string to replace the function call with
-            first_index: The index for slicing the 3D batch tensors
+            b_index: The index for slicing the 3D batch tensors
             nodes: The 3D batch tensors
         """
-        node_names = [node.get_name() for node in nodes]
-        epilogue_dict = {node.name: e_node for e_node in epilogue_nodes for node in e_node.origin_node.args if hasattr(node, "name")}
-
-        def index_into_arg(arg, node):
-            ind_dims = [first_index] + [0] * (len(node.shape) - 1)
-            indexed_arg = kernel.index(node, ind_dims)
-            indexed_arg = indexed_arg.split("[")[1]
-            return f"&({arg}[{indexed_arg})"
-
         def hook():
             call_args, buffer_names, _, _ = kernel.args.python_argdefs()
-            indexed_params = []
-            for arg, buf in zip(call_args, buffer_names):
-                if buf in node_names:
-                    node = nodes[node_names.index(buf)]
-                    arg = index_into_arg(arg, node)
-                elif buf in epilogue_dict:
-                    epilogue_node = epilogue_dict[buf]
-                    arg = index_into_arg(arg, epilogue_node)
-                indexed_params.append(arg)
-            params = ", ".join(indexed_params)
-            return f"{function_name}({params});"
+            for i, buf in enumerate(buffer_names):
+                if buf == self.b_index:
+                    call_args[i] = b_index
+            call = f"{function_name}({', '.join(call_args)});"
+            return call
 
         assert placeholder not in kernel.render_hooks
         kernel.render_hooks[placeholder] = hook
@@ -187,7 +183,7 @@ class CppBmmTemplate(CppGemmTemplate):
             # if epilogue nodes exist, they have 3D ranges but args are 2D, so add 0 index
             if len(epilogue_nodes) == 0:
                 return args
-            return [0] + args
+            return [self.b_index] + args
 
         return [reindexer]
 
@@ -213,9 +209,11 @@ class CppBmmTemplate(CppGemmTemplate):
         options["BX"], options["BW"], options["BY"] = BX, BW, BY
         options["BY_2d"] = options["Y_2d"]
         for kword in ["X", "W", "Y", "GemmOut", "Y_2d"]:
-            options[kword] = kernel.select(options[kword], 0, 0)
+            options[kword] = kernel.select(options[kword], 0, self.b_index)
         for kword in ["X", "W", "Y"]:
             options[kword + "_dtype"] = DTYPE_TO_CPP[options[kword].dtype]
+        options["b_index"] = self.b_index
+
         return options, fake_buffers
 
     def render(  # type: ignore[override, return]
@@ -239,12 +237,25 @@ class CppBmmTemplate(CppGemmTemplate):
                 stack.enter_context(
                     patch.object(V.graph, "get_dtype", self._fake_get_dtype(buf))
                 )
+            #tile_code = '{%- set tile_Y = kernel.slice_nd(Y_2d, [("m_start", "m_end"), ("n_start", "n_end")]) %}'
+            #indexed_tile_code = '\n'.join((
+            #        '{%- set tile_Y = kernel.select(Y_2d, 0, b_index) %}',
+            #        tile_code.replace('Y_2d', 'tile_Y')
+            #    ))
+            b_indexed_gemm_template = GEMM_TEMPLATE #.replace(tile_code, indexed_tile_code)
             result = self._template_from_string(MICROKERNEL_DEF).render(**options)
             result += self._template_from_string(
-                GEMM_THREADED_MM_STUB + GEMM_TEMPLATE
+                GEMM_THREADED_MM_STUB + b_indexed_gemm_template
             ).render(**options)
             result += self._template_from_string(
-                GEMM_SINGLE_THREAD_MM_STUB + GEMM_TEMPLATE
+                GEMM_SINGLE_THREAD_MM_STUB + b_indexed_gemm_template
             ).render(**{**options, "num_threads": 1})
             result += self._template_from_string(BMM_WRAPPER).render(**options)
+
+            # Finalize the function definitions for the gemm routines
+            sub_mm_hooks = {name: hook for name, hook in kernel.render_hooks.items() if "FOR_BMM" in name}
+            result = PartialRender(result, sub_mm_hooks).finalize_all()
+            for name in sub_mm_hooks:
+                del kernel.render_hooks[name]
+            del kernel.args.sizevars[options["b_index"]]
             return result

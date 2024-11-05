@@ -629,6 +629,10 @@ class CppGemmTemplate(CppTemplate):
             if not is_mkldnn_wgt and isinstance(new_inputs[1], torch.Tensor):
                 # With the assumptation that W is the storage of unwrap view
                 # thus view it back here
+                if view_size[0].is_symbol:
+                    size = torch.tensor(new_inputs[1].size()).prod()
+                    fixed_size = torch.tensor(view_size[1:], dtype=torch.int).prod()
+                    view_size[0] = (size // fixed_size).item()
                 new_inputs[1] = new_inputs[1].as_strided(
                     view_size, view_stride, view_offset
                 )
