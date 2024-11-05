@@ -38,6 +38,7 @@ from torch._dynamo.utils import defake, dynamo_timed
 from torch._logging import LazyString, trace_structured
 from torch._prims_common import make_channels_last_strides_for
 from torch._subclasses.fake_tensor import FakeTensor
+from torch.autograd.function import BackwardCFunction
 from torch.fx import GraphModule
 from torch.fx.experimental._backward_state import BackwardState
 from torch.fx.experimental.sym_node import magic_methods, method_to_operator
@@ -974,7 +975,11 @@ class GraphLowering(torch.fx.Interpreter):
             # Alternately we could filter this out in AotAutograd
             self.graph_input_names.append(target)
             return None
-        assert isinstance(example, torch.Tensor), example
+        if isinstance(example, BackwardCFunction):
+            # Ignored arg, must be unused
+            # Alternately we could filter this out in AotAutograd
+            self.graph_input_names.append(target)
+            return None
         # todo(chilli): We can remove the last check once we turn buffers into
         # static shape tensors. That's a hack to workaround Inductor believing
         # the buffer should be static but us passing in a fake tensor with

@@ -60,7 +60,6 @@ from .traced_function_transforms import aot_dispatch_subclass
 from .utils import (
     call_func_at_runtime_with_args,
     make_boxed_func,
-    normalize_as_list,
     partial_flatten_asdict,
     strict_zip,
 )
@@ -1512,7 +1511,6 @@ To fix this, your tensor subclass must implement the dunder method __force_to_sa
             metadata: ViewAndMutationMeta = fw_metadata  # type: ignore[assignment]
             maybe_subclass_metadata: Optional[SubclassMeta] = maybe_subclass_meta
             num_symints_saved_for_bw = num_symints_saved_for_bw_
-            _compiled_autograd_should_lift = False
             _aot_id = aot_config.aot_id
             _lazy_backward_info = lazy_backward_info
 
@@ -1524,9 +1522,12 @@ To fix this, your tensor subclass must implement the dunder method __force_to_sa
             def forward(ctx, *deduped_flat_tensor_args):
                 args = deduped_flat_tensor_args
                 if backward_state_indices:
+                    ctx._backward_state_indices = backward_state_indices
                     bw_state = args[backward_state_indices[0]]
                     assert isinstance(bw_state, BackwardState)
                     ctx._compiled_autograd_backward_state = bw_state
+
+                ctx._disable_amp = disable_amp
 
                 # There is a pretty complicated calling convention around what the compiled fw returns.
                 # The full list of outputs and their relative order is:
@@ -1669,7 +1670,6 @@ To fix this, your tensor subclass must implement the dunder method __force_to_sa
                 # https://github.com/pytorch/pytorch/pull/92348/files#r1072962107
                 class CompiledFunctionBackward(torch.autograd.Function):
                     # CompiledFunctionBackward is not yet supported in dynamo skipfiles
-                    _compiled_autograd_should_lift = False
                     _aot_id = aot_config.aot_id
 
                     @staticmethod
@@ -1841,13 +1841,18 @@ To fix this, your tensor subclass must implement the dunder method __force_to_sa
                 grad_output_types_ = [
                     torch.Tensor if x is FakeTensor else x for x in grad_output_types
                 ]
-                assert (
-                    grad_output_types_ == CompiledFunction.metadata.output_types
-                ), f"""\
-    We incorrectly attempted to compile the backward with incorrect subclass metadata.
-    If you run into this error, please file an issue.
-    Expected grad_output types: {str(CompiledFunction.metadata.output_types)}
-    Got grad_output types: {str(grad_output_types)}"""
+                # breakpoint()
+                # AOTDispatcher inlines through this, with functional tensors
+                # so this errors
+                if not torch._dynamo.compiled_autograd.in_compiled_autograd_region:
+                    # grad_output_types_ = grad_output_types
+                    assert (
+                        grad_output_types_ == CompiledFunction.metadata.output_types
+                    ), f"""\
+        We incorrectly attempted to compile the backward with incorrect subclass metadata.
+        If you run into this error, please file an issue.
+        Expected grad_output types: {str(CompiledFunction.metadata.output_types)}
+        Got grad_output types: {str(grad_output_types)}"""
 
                 del flat_bw_args_with_grads
 
@@ -1976,23 +1981,23 @@ To fix this, your tensor subclass must implement the dunder method __force_to_sa
 
             @staticmethod
             def _backward_impl(ctx, all_args):
-                if ctx._is_compiled_autograd_tracing():
-                    if lazy_backward_info is None:
-                        raise RuntimeError(
-                            """This compiled backward function was saved by AOTAutogradCache, which does not support
-                        compiled autograd. Please turn off AOTAutogradCache using `TORCHINDUCTOR_AUTOGRAD_CACHE=0`."""
-                        )
-                    bw_module = lazy_backward_info.bw_module
-                    # For compiled autograd, run raw FX graph so that it can be inlined into the larger graph
-                    symints = ctx._get_compiled_autograd_symints()
-                    assert len(symints) == len(ctx.symints)
-                    all_args[: len(symints)] = symints
-                    if backward_state_indices:
-                        assert ctx._compiled_autograd_backward_state.proxy is not None
-                        all_args.append(ctx._compiled_autograd_backward_state)
-                    context = torch._C._DisableAutocast if disable_amp else nullcontext
-                    with context():
-                        return normalize_as_list(bw_module(*all_args))
+                # if ctx._is_compiled_autograd_tracing():
+                #     if lazy_backward_info is None:
+                #         raise RuntimeError(
+                #             """This compiled backward function was saved by AOTAutogradCache, which does not support
+                #         compiled autograd. Please turn off AOTAutogradCache using `TORCHINDUCTOR_AUTOGRAD_CACHE=0`."""
+                #         )
+                #     bw_module = lazy_backward_info.bw_module
+                #     # For compiled autograd, run raw FX graph so that it can be inlined into the larger graph
+                #     symints = ctx._get_compiled_autograd_symints()
+                #     assert len(symints) == len(ctx.symints)
+                #     all_args[: len(symints)] = symints
+                #     if backward_state_indices:
+                #         assert ctx._compiled_autograd_backward_state.proxy is not None
+                #         all_args.append(ctx._compiled_autograd_backward_state)
+                #     context = torch._C._DisableAutocast if disable_amp else nullcontext
+                #     with context():
+                #         return normalize_as_list(bw_module(*all_args))
 
                 assert (
                     not backward_state_indices

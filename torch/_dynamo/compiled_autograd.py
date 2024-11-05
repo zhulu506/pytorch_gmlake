@@ -6,8 +6,10 @@ from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING, Union
 
 import torch
 from torch._dynamo.external_utils import (
+    call_aot_bwd_impl,
     call_backward,
     call_hook,
+    FakeBackwardCFunction,
     FakeCompiledAutogradEngine,
 )
 from torch._dynamo.source import GetItemSource, LocalSource
@@ -15,6 +17,7 @@ from torch._dynamo.utils import counters, lazy_format_graph_code, set_locals_to_
 from torch._logging import getArtifactLogger, trace_structured
 from torch._prims_common import clone_preserve_strides
 from torch._subclasses import FakeTensorMode
+from torch.autograd.function import BackwardCFunction
 from torch.fx import GraphModule
 from torch.fx.experimental._backward_state import BackwardState
 from torch.fx.experimental.proxy_tensor import (
@@ -53,6 +56,11 @@ def maybe_clone(x):
     if x is not None:
         return clone_preserve_strides(x)
     return x
+
+
+# TODO: split this, move everything into the lazy bwd info
+def is_aot_bwd_ctx(ctx: BackwardCFunction):
+    return hasattr(ctx._forward_cls, "_aot_id")  # type: ignore[attr-defined]
 
 
 class AutogradCompilerInstance:
@@ -146,25 +154,109 @@ class AutogradCompilerInstance:
         self.stack.enter_context(disable_autocast_cache())
         return inputs, sizes, scalars
 
+    def get_aot_backward_proxies(self, pctx, pinputs, psaved_tensors):
+        def create_fake_ctx(
+            ctx: BackwardCFunction,
+            saved_tensors: List[torch.Tensor],
+        ) -> FakeBackwardCFunction:
+            return FakeBackwardCFunction(ctx, saved_tensors)
+
+        def call_aot_bwd_prologue(
+            fakectx: FakeBackwardCFunction,
+            *args: Any,
+        ) -> Union[torch.Tensor, tuple[torch.Tensor, ...]]:
+            forward_cls = fakectx._forward_cls  # type: ignore[attr-defined]
+            all_args = forward_cls._backward_prologue(fakectx, *args)
+
+            # non-traceable calls originally in call_aot_bwd_impl
+            if forward_cls._lazy_backward_info is None:
+                raise RuntimeError(
+                    """This compiled backward function was saved by AOTAutogradCache, which does not support
+                compiled autograd. Please turn off AOTAutogradCache using `TORCHINDUCTOR_AUTOGRAD_CACHE=0`."""
+                )
+
+            assert fakectx.symints is not None
+            assert fakectx.bw_module is not None
+            if hasattr(forward_cls, "_backward_state_indices"):
+                assert fakectx._compiled_autograd_backward_state.proxy is not None
+                all_args.append(fakectx._compiled_autograd_backward_state)
+
+            return all_args
+
+        def call_aot_bwd_epilogue(
+            fakectx: FakeBackwardCFunction,
+            *args: Any,
+        ) -> Union[torch.Tensor, tuple[torch.Tensor, ...]]:
+            return fakectx._forward_cls._backward_epilogue(fakectx, *args)  # type: ignore[attr-defined]
+
+        torch._dynamo.allow_in_graph(create_fake_ctx)
+        torch._dynamo.allow_in_graph(call_aot_bwd_prologue)
+        torch._dynamo.allow_in_graph(call_aot_bwd_epilogue)
+
+        pfakectx = self.fx_tracer.create_proxy(
+            kind="call_function",
+            target=create_fake_ctx,
+            args=(
+                pctx,
+                psaved_tensors,
+            ),
+            kwargs={},
+        )
+        pall_args = self.fx_tracer.create_proxy(
+            kind="call_function",
+            target=call_aot_bwd_prologue,
+            args=(
+                pfakectx,
+                *pinputs,
+            ),
+            kwargs={},
+        )
+        pout = self.fx_tracer.create_proxy(
+            kind="call_function",
+            target=call_aot_bwd_impl,
+            args=(
+                pfakectx,
+                pall_args,
+            ),
+            kwargs={},
+        )
+        proxies = self.fx_tracer.create_proxy(
+            kind="call_function",
+            target=call_aot_bwd_epilogue,
+            args=(
+                pfakectx,
+                pout,
+            ),
+            kwargs={},
+        )
+        return proxies
+
     def proxy_call_backward(
         self,
         inputs,
         output_metadatas,
         saved_tensors,
-        backward_idx: int,
+        bwd_idx: int,
+        ctx_weak: BackwardCFunction,
     ):
         assert self.hooks_proxy is not None
-        backward_c_function = self.hooks_proxy[backward_idx]  # type: ignore[index]
-        proxies = self.fx_tracer.create_proxy(
-            kind="call_function",
-            target=call_backward,
-            args=(
-                backward_c_function,
-                self.to_proxy(saved_tensors),
-                *self.to_proxy(inputs),
-            ),
-            kwargs={},
-        )
+        pctx = self.hooks_proxy[bwd_idx]  # type: ignore[index]
+        pinputs = self.to_proxy(inputs)
+        psaved_tensors = self.to_proxy(saved_tensors)
+
+        if is_aot_bwd_ctx(ctx_weak):
+            proxies = self.get_aot_backward_proxies(pctx, pinputs, psaved_tensors)
+        else:
+            proxies = self.fx_tracer.create_proxy(
+                kind="call_function",
+                target=call_backward,
+                args=(
+                    pctx,
+                    psaved_tensors,
+                    *pinputs,
+                ),
+                kwargs={},
+            )
 
         with disable_proxy_modes_tracing():
             # create fake Tensors
@@ -707,20 +799,18 @@ class AutogradCompilerInstance:
         self,
         node_name: str,
         nodecall_index: int,
-        pyobj: Optional[torch.autograd.Function],
+        ctx: Optional[BackwardCFunction],
     ):
         maybe_aot_id = ""
-        if pyobj is not None:
-            forward_cls = pyobj._forward_cls  # type: ignore[attr-defined]
-            if hasattr(forward_cls, "_aot_id"):
-                # backward was created by AOT Dispatcher
-                self.aot_graph_cls_name = node_name
-                maybe_aot_id = forward_cls._aot_id
-                self.aot_graph_infos[nodecall_index] = {
-                    "ca_node_start_idx": len(self.fx_tracer.graph.nodes),
-                    "aot_id": maybe_aot_id,
-                    "aot_gm": forward_cls._lazy_backward_info.bw_module,
-                }
+        if ctx is not None and is_aot_bwd_ctx(ctx):
+            forward_cls = ctx._forward_cls  # type: ignore[attr-defined]
+            self.aot_graph_cls_name = node_name
+            maybe_aot_id = forward_cls._aot_id
+            self.aot_graph_infos[nodecall_index] = {
+                "ca_node_start_idx": len(self.fx_tracer.graph.nodes),
+                "aot_id": maybe_aot_id,
+                "aot_gm": forward_cls._lazy_backward_info.bw_module,
+            }
 
         new_code = f"{node_name}{maybe_aot_id} (NodeCall {nodecall_index})"
         raw_stack_trace = CapturedTraceback.extract().format()[-1]

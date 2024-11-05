@@ -73,6 +73,8 @@ class FakeBackwardCFunction:
     ) -> None:
         self.real = real
         self.saved_tensors = saved_tensors
+        self.symints = real._get_compiled_autograd_symints()  # type: ignore[attr-defined]
+        self.bw_module = real._bw_module  # type: ignore[attr-defined]
 
     def __getattr__(self, name: str) -> Any:
         if name == "saved_variables":
@@ -85,13 +87,35 @@ class FakeBackwardCFunction:
         return getattr(self.real, name)
 
 
+def normalize_as_list(x: Any) -> List[Any]:
+    if isinstance(x, tuple):
+        return list(x)
+    elif isinstance(x, list):
+        return x
+    return [x]
+
+
+def call_aot_bwd_impl(
+    fakectx: FakeBackwardCFunction,
+    *args: Any,
+) -> List[torch.Tensor]:
+    # TODO: this is split on aot autograd main path,
+    # doesn't work with backward state
+    all_args = args[0]
+    bw_module = fakectx.bw_module
+    symints = fakectx.symints
+    all_args[: len(symints)] = symints
+    out = bw_module(*all_args)
+    return normalize_as_list(out)
+
+
 def call_backward(
-    backward_c_function: torch.autograd.function.BackwardCFunction,
+    ctx: torch.autograd.function.BackwardCFunction,
     saved_tensors: List[torch.Tensor],
     *args: Any,
 ) -> Union[torch.Tensor, tuple[torch.Tensor, ...]]:
-    fake = FakeBackwardCFunction(backward_c_function, saved_tensors)
-    grads = fake._forward_cls.backward(fake, *args)  # type: ignore[attr-defined]
+    fakectx = FakeBackwardCFunction(ctx, saved_tensors)
+    grads = fakectx._forward_cls.backward(fakectx, *args)  # type: ignore[attr-defined]
 
     if not isinstance(grads, tuple):
         grads = (grads,)

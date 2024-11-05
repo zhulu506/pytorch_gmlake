@@ -1661,9 +1661,15 @@ class OutputGraph:
                                     fake_attr_val,
                                 )
                         continue
-                    fake = (
-                        arg.fake_tensor if arg.fake_tensor is not None else arg.example
-                    )
+
+                    if arg.fake_tensor is not None:
+                        fake = arg.fake_tensor
+                    elif isinstance(arg.example, (torch.SymInt, torch.Tensor)):
+                        fake = arg.example
+                    else:
+                        # TODO: split this out
+                        # GraphArgs may not have fakes, but the tensors they hold will be fake
+                        fake = None
                     update_used_symbols(used_symbols, fake)
 
         # After removing unused graphargs, prune unused binds_symbol
