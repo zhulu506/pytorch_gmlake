@@ -35,7 +35,6 @@ from ..pattern_matcher import (
     ReplaceFn,
     SearchFn,
 )
-from ..virtualized import V
 
 
 aten = torch.ops.aten
