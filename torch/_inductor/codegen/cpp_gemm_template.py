@@ -690,7 +690,9 @@ class CppGemmTemplate(CppTemplate):
         assert micro_gemm is not None
 
         def preprocessor(inputs, layout):
-            new_inputs, new_layout = normalize_shapes(*maybe_to_dense(*reorder_and_filter(inputs, layout)))
+            new_inputs, new_layout = normalize_shapes(
+                *maybe_to_dense(*reorder_and_filter(inputs, layout))
+            )
             return cls.prep_weight(new_inputs, new_layout, micro_gemm)
 
         def prune_tensors(input_nodes, new_input_nodes):
@@ -767,8 +769,12 @@ class CppGemmTemplate(CppTemplate):
                 if weight_is_constant:
                     W = V.graph.constants[W_node.get_name()]
                     new_input_nodes[1] = W
-                new_input_nodes, new_layout = normalize_shapes(*maybe_to_dense(new_input_nodes, layout))
-                new_input_nodes, _ = cls.prep_weight(new_input_nodes, new_layout, micro_gemm)
+                new_input_nodes, new_layout = normalize_shapes(
+                    *maybe_to_dense(new_input_nodes, layout)
+                )
+                new_input_nodes, _ = cls.prep_weight(
+                    new_input_nodes, new_layout, micro_gemm
+                )
                 W_packed = new_input_nodes[1]
                 if weight_is_constant:
                     W_packed = V.graph.add_tensor_constant(W_packed)
@@ -796,7 +802,6 @@ class CppGemmTemplate(CppTemplate):
         )
         template.maybe_append_choice(choices)
         return template
-
 
     @staticmethod
     def get_padded_size(n, block_n, k, should_block_weight):
@@ -1145,7 +1150,13 @@ class CppGemmTemplate(CppTemplate):
                     return reindexer
 
                 default_reindexers = self.get_default_reindexers(epilogue_nodes)
-                reindexers.extend([get_reindexer(epilogue_node, default_reindexer) for epilogue_node, default_reindexer in zip(epilogue_nodes, default_reindexers)])  # type: ignore[list-item]
+                new_reindexers = [
+                    get_reindexer(epilogue_node, default_reindexer)
+                    for epilogue_node, default_reindexer in zip(
+                        epilogue_nodes, default_reindexers
+                    )
+                ]
+                reindexers.extend(new_reindexers)
                 if isinstance(Y, ir.BaseView):
                     storage = ir.StorageBox(Y.unwrap_view())
                 else:

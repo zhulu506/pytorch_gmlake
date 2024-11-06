@@ -168,7 +168,7 @@ class CppTemplateKernel(CppKernel):
         # We avoid using L.select here because we need clamp=False
         node = wrap_with_tensorbox(node)
         idx = ir.View.handle_negative_index(idx, node.get_size()[dim])
-        sliced = L.squeeze(L.slice_(node, dim, idx, idx + 1, clamp=False))
+        sliced = L.squeeze(L.slice_(node, dim, idx, idx + 1, clamp=False), dim)
         assert isinstance(sliced.data, ir.ReinterpretView), sliced.data
         return sliced.data
 

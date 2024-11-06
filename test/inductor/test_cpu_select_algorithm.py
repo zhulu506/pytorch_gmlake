@@ -1761,7 +1761,6 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
             self.common(mod, (v,), atol=atol, rtol=rtol)
         self.assertEqual(counters["inductor"]["select_algorithm_autotune"], 1)
 
-    @inductor_config.patch({"freezing": True})
     @patches
     @torch.no_grad
     @unittest.skipIf(not TEST_MKL, "Test requires MKL")
@@ -1786,7 +1785,6 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
             self.common(mod, (u, v), atol=atol, rtol=rtol)
         self.assertEqual(counters["inductor"]["select_algorithm_autotune"], 1)
 
-    @inductor_config.patch({"freezing": True})
     @patches
     @torch.no_grad
     @unittest.skipIf(not TEST_MKL, "Test requires MKL")
@@ -1839,7 +1837,6 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
             1 if order[0] == (0, 1, 2) else 0,
         )
 
-    @inductor_config.patch({"freezing": True})
     @patches
     @torch.no_grad
     @unittest.skipIf(not TEST_MKL, "Test requires MKL")
@@ -1848,7 +1845,6 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
     @parametrize("Kdim", (96,))
     @dtypes(torch.float, torch.float16, torch.bfloat16)
     def test_bmm_self_permute(self, bs, Mdim, Kdim, dtype):
-
         class M(torch.nn.Module):
             def __init__(self):
                 super().__init__()
@@ -1863,7 +1859,6 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
             self.common(mod, (u,), atol=atol, rtol=rtol)
         self.assertEqual(counters["inductor"]["select_algorithm_autotune"], 1)
 
-    @inductor_config.patch({"freezing": True})
     @patches
     @torch.no_grad
     @unittest.skipIf(not TEST_MKL, "Test requires MKL")
@@ -1871,7 +1866,6 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
     @parametrize("Mdim", (64,))
     @dtypes(torch.float)
     def test_bmm_self_square(self, bs, Mdim, dtype):
-
         class M(torch.nn.Module):
             def __init__(self):
                 super().__init__()
