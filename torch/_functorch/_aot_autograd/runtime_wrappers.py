@@ -1935,20 +1935,7 @@ To fix this, your tensor subclass must implement the dunder method __force_to_sa
 
                         @staticmethod
                         def forward(ctx, *unused_args):
-                            outs = CompiledFunction._backward_impl(ctx, all_args)
-                            # TODO: figure out how to refactor the backward properly
-                            # so I can use aot_dispatch_subclass_wrapper() here.
-                            if CompiledFunction.maybe_subclass_metadata is not None:
-                                assert (
-                                    CompiledFunction.maybe_subclass_metadata.grad_input_metas
-                                    is not None
-                                )
-                                outs_wrapped = wrap_tensor_subclasses(
-                                    outs,
-                                    subclass_metas=CompiledFunction.maybe_subclass_metadata.grad_input_metas,
-                                )
-                                return outs_wrapped
-                            return outs
+                            return CompiledFunction._backward_impl(ctx, all_args)
 
                         @staticmethod
                         def backward(ctx, *args):
@@ -1965,17 +1952,6 @@ To fix this, your tensor subclass must implement the dunder method __force_to_sa
                 else:
                     out = CompiledFunction._backward_impl(ctx, all_args)
 
-                # TODO: figure out how to refactor the backward properly so I can use aot_dispatch_subclass_wrapper() here.
-                if CompiledFunction.maybe_subclass_metadata is not None:
-                    assert (
-                        CompiledFunction.maybe_subclass_metadata.grad_input_metas
-                        is not None
-                    )
-                    outs_wrapped = wrap_tensor_subclasses(
-                        out,
-                        subclass_metas=CompiledFunction.maybe_subclass_metadata.grad_input_metas,
-                    )
-                    return outs_wrapped
                 return out
 
             @staticmethod
@@ -1997,11 +1973,8 @@ To fix this, your tensor subclass must implement the dunder method __force_to_sa
                     context = torch._C._DisableAutocast if disable_amp else nullcontext
                     with context():
                         out = normalize_as_list(bw_module(*all_args))
-                    # TODO: replace with post_compile wrapper
-                    out = FunctionalizedRngRuntimeWrapper()._functionalized_rng_runtime_epilogue(
-                        CompiledFunction.metadata, out, offset_index=len(out) - 1
-                    )
-                    return tuple(out)
+                    return CompiledFunction._backward_epilogue(ctx, out)
+
                 assert (
                     not backward_state_indices
                 ), "BackwardState requires CompiledAutograd"
@@ -2072,7 +2045,10 @@ To fix this, your tensor subclass must implement the dunder method __force_to_sa
                     steal_args=True,
                     disable_amp=disable_amp,
                 )
+                return CompiledFunction._backward_epilogue(ctx, out)
 
+            @staticmethod
+            def _backward_epilogue(ctx, out):
                 # Toss out the backward output tokens
                 num_bw_tokens = CompiledFunction.metadata.num_backward_tokens
                 if num_bw_tokens > 0:
@@ -2082,7 +2058,22 @@ To fix this, your tensor subclass must implement the dunder method __force_to_sa
                 out = FunctionalizedRngRuntimeWrapper()._functionalized_rng_runtime_epilogue(
                     CompiledFunction.metadata, out, offset_index=len(out) - 1
                 )
-                return tuple(out)
+                out = tuple(out)
+
+                # TODO: figure out how to refactor the backward properly so I can use aot_dispatch_subclass_wrapper() here.
+                if CompiledFunction.maybe_subclass_metadata is not None:
+                    assert (
+                        CompiledFunction.maybe_subclass_metadata.grad_input_metas
+                        is not None
+                    )
+                    outs_wrapped = wrap_tensor_subclasses(
+                        out,
+                        subclass_metas=CompiledFunction.maybe_subclass_metadata.grad_input_metas,
+                        included_subclass_symints=True,
+                        is_runtime=True,
+                    )
+                    return outs_wrapped
+                return out
 
         compiled_function = RuntimeWrapper(
             indices_of_inps_to_detach=indices_of_inps_to_detach,
