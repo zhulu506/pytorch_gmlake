@@ -56,11 +56,11 @@ class CppTemplateKernel(CppKernel):
         inputs: Dict[str, ir.Buffer],
         outputs: Dict[str, ir.Buffer],
         aliases: Optional[Dict[str, str]] = None,
-        function_name: str = None,
-        symbols: Optional[List[sympy.Symbol]] = [],
+        function_name: str = "",
+        symbols: Optional[List[sympy.Expr]] = None,
         placeholder: str = "<DEF_KERNEL>",
     ) -> str:
-        if function_name is None:
+        if len(function_name) == 0:
             function_name = str(self.kernel_name)
         for name, inp in inputs.items():
             if inp is not None:
@@ -84,7 +84,7 @@ class CppTemplateKernel(CppKernel):
         }
         unique_sizevars |= {
             s
-            for sym in symbols
+            for sym in symbols or []
             if isinstance(sym, sympy.Expr)
             for s in sym.free_symbols
         }

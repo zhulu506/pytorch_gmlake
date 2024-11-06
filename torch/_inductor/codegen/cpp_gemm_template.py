@@ -603,10 +603,14 @@ class CppGemmTemplate(CppTemplate):
                 assert len(input_indices) >= 2
                 return [inputs[idx] for idx in input_indices], layout_or_out
             else:
-                return [inputs[0]] * len(input_indices), layout_or_out #Assumes the first input is the only input
+                # Assumes the first input is the only input
+                return [inputs[0]] * len(input_indices), layout_or_out
 
         new_inputs, new_layout = reorder_and_filter(input_nodes, layout)
-        is_mkldnn_wgt = new_inputs[1].get_name() in V.graph.constants and V.graph.constants[new_inputs[1].get_name()].is_mkldnn
+        is_mkldnn_wgt = (
+            new_inputs[1].get_name() in V.graph.constants
+            and V.graph.constants[new_inputs[1].get_name()].is_mkldnn
+        )
         if is_mkldnn_wgt:
             # It shouldn't happen as viewing an mkldnn tensor, we can extend the
             # implementation if it does.
@@ -686,10 +690,8 @@ class CppGemmTemplate(CppTemplate):
         assert micro_gemm is not None
 
         def preprocessor(inputs, layout):
-            return cls.prep_weight(
-                    *normalize_shapes(*maybe_to_dense(*reorder_and_filter(inputs, layout))),
-                    micro_gemm,
-            )
+            new_inputs, new_layout = normalize_shapes(*maybe_to_dense(*reorder_and_filter(inputs, layout)))
+            return cls.prep_weight(new_inputs, new_layout, micro_gemm)
 
         def prune_tensors(input_nodes, new_input_nodes):
             def share_storage(base_tensor: torch.Tensor, comp_tensor: torch.Tensor):
@@ -765,10 +767,8 @@ class CppGemmTemplate(CppTemplate):
                 if weight_is_constant:
                     W = V.graph.constants[W_node.get_name()]
                     new_input_nodes[1] = W
-                new_input_nodes, _ = cls.prep_weight(
-                    *normalize_shapes(*maybe_to_dense(new_input_nodes, layout)),
-                    micro_gemm,
-                )
+                new_input_nodes, new_layout = normalize_shapes(*maybe_to_dense(new_input_nodes, layout))
+                new_input_nodes, _ = cls.prep_weight(new_input_nodes, new_layout, micro_gemm)
                 W_packed = new_input_nodes[1]
                 if weight_is_constant:
                     W_packed = V.graph.add_tensor_constant(W_packed)
@@ -810,8 +810,7 @@ class CppGemmTemplate(CppTemplate):
     @classmethod
     def prep_weight(cls, inputs, layout, micro_gemm):
         should_block_weight = (
-            cls == CppGemmTemplate 
-            or micro_gemm.get_b_layout() != LayoutType.NORMAL
+            cls == CppGemmTemplate or micro_gemm.get_b_layout() != LayoutType.NORMAL
         )
         W = inputs[1]
         new_inputs = list(inputs)
@@ -882,28 +881,18 @@ class CppGemmTemplate(CppTemplate):
     @staticmethod
     def maybe_pad_weight(W, padding):
         if isinstance(W, ir.IRNode):
-            padded_w = L.constant_pad_nd(W, (0, padding))
-            padded_w = CppGemmTemplate.realize_permuted_irnode(padded_w)
+            W = L.constant_pad_nd(W, (0, padding))
+            W = CppGemmTemplate.realize_permuted_irnode(W)
         else:
-            padded_w = torch.nn.functional.pad(W, (0, padding))
-            padded_w = padded_w.contiguous()
-        return padded_w
+            if padding > 0:
+                W = torch.nn.functional.pad(W, (0, padding))
+            W = W.contiguous()
+        return W
 
     @staticmethod
     def realize_permuted_irnode(W):
         W = ir.ExternKernel.realize_input(W)
         W = ir.ExternKernel.require_contiguous(W)
-        if isinstance(W, ir.ReinterpretView):
-            # normalize stride to be "contiguous_strides" per size
-            # this avoids the problems in L.view during template codegen
-            assert isinstance(W.layout, ir.FixedLayout)
-            W.layout = ir.FixedLayout(
-                W.layout.device,
-                W.layout.dtype,
-                W.layout.size,
-                ir.FlexibleLayout.contiguous_strides(W.layout.size),
-                W.layout.offset,
-            )
         return W
 
     @staticmethod
@@ -1135,7 +1124,9 @@ class CppGemmTemplate(CppTemplate):
                         template_buffer.get_size(),
                     )
                     if default_reindexer:
-                        reshape_reindex = ir.fuse_reindexing(reshape_reindex, default_reindexer)
+                        reshape_reindex = ir.fuse_reindexing(
+                            reshape_reindex, default_reindexer
+                        )
 
                     # From epilogue_node_ordered (ordered by stride decreasingly, in dense format) to epilogue_node, for example:
                     #   epilogue_node_ordered (ordered by stride decreasingly, in dense format):
@@ -1152,6 +1143,7 @@ class CppGemmTemplate(CppTemplate):
 
                     reindexer = ir.fuse_reindexing(stride_reindex, reshape_reindex)
                     return reindexer
+
                 default_reindexers = self.get_default_reindexers(epilogue_nodes)
                 reindexers.extend([get_reindexer(epilogue_node, default_reindexer) for epilogue_node, default_reindexer in zip(epilogue_nodes, default_reindexers)])  # type: ignore[list-item]
                 if isinstance(Y, ir.BaseView):

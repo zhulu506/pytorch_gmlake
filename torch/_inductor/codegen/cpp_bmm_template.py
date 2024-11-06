@@ -1,6 +1,6 @@
 # mypy: allow-untyped-defs
 import contextlib
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from unittest.mock import patch
 
 import sympy
@@ -97,17 +97,6 @@ class CppBmmTemplate(CppGemmTemplate):
         # Value may be changed after micro_gemm is instantiated if using VNNI layout
         self.should_block_weights = False
         self.b_index = sympy.Symbol("s_b_index", integer=True, nonnegative=True)
-        #self.b = layout.size[0]
-        #self.b_index = V.graph.sizevars.shape_env.create_symbol(
-        #    val=int(self.b),
-        #    source=TensorPropertySource(
-        #        base=LocalSource(local_name="bmm"), prop=TensorProperty.SIZE, idx=0
-        #    ),
-        #    constraint_dim=StrictMinMaxConstraint(
-        #        vr=ValueRanges(lower=0, upper=self.b),
-        #        warn_only=False,
-        #    ),
-        #)
 
     @staticmethod
     def get_padded_size(n, block_n, k, block_weight):
@@ -166,6 +155,7 @@ class CppBmmTemplate(CppGemmTemplate):
             b_index: The index for slicing the 3D batch tensors
             nodes: The 3D batch tensors
         """
+
         def hook():
             call_args, buffer_names, _, _ = kernel.args.python_argdefs()
             for i, buf in enumerate(buffer_names):
@@ -237,23 +227,21 @@ class CppBmmTemplate(CppGemmTemplate):
                 stack.enter_context(
                     patch.object(V.graph, "get_dtype", self._fake_get_dtype(buf))
                 )
-            #tile_code = '{%- set tile_Y = kernel.slice_nd(Y_2d, [("m_start", "m_end"), ("n_start", "n_end")]) %}'
-            #indexed_tile_code = '\n'.join((
-            #        '{%- set tile_Y = kernel.select(Y_2d, 0, b_index) %}',
-            #        tile_code.replace('Y_2d', 'tile_Y')
-            #    ))
-            b_indexed_gemm_template = GEMM_TEMPLATE #.replace(tile_code, indexed_tile_code)
             result = self._template_from_string(MICROKERNEL_DEF).render(**options)
             result += self._template_from_string(
-                GEMM_THREADED_MM_STUB + b_indexed_gemm_template
+                GEMM_THREADED_MM_STUB + GEMM_TEMPLATE
             ).render(**options)
             result += self._template_from_string(
-                GEMM_SINGLE_THREAD_MM_STUB + b_indexed_gemm_template
+                GEMM_SINGLE_THREAD_MM_STUB + GEMM_TEMPLATE
             ).render(**{**options, "num_threads": 1})
             result += self._template_from_string(BMM_WRAPPER).render(**options)
 
             # Finalize the function definitions for the gemm routines
-            sub_mm_hooks = {name: hook for name, hook in kernel.render_hooks.items() if "FOR_BMM" in name}
+            sub_mm_hooks = {
+                name: hook
+                for name, hook in kernel.render_hooks.items()
+                if "FOR_BMM" in name
+            }
             result = PartialRender(result, sub_mm_hooks).finalize_all()
             for name in sub_mm_hooks:
                 del kernel.render_hooks[name]

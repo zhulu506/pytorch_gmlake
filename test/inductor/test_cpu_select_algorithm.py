@@ -1791,13 +1791,16 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
     @torch.no_grad
     @unittest.skipIf(not TEST_MKL, "Test requires MKL")
     @parametrize("Ndim", (64, 61))
-    @parametrize("order", (
-        ((0,1,2), (0,2,1)), # First BMM in hf_Reformer
-        ((0,1,2), (1,2,0)), # First BMM in hf_DistilBert
-        ((0,1,2), (1,0,2)), # Second BMM in hf_DistilBert, hf_T5
-        ((1,0,2), (0,1,2)), # Third BMM in hf_Reformer
-        ((1,0,2), (1,2,0)), # First in hf_T5
-    ))
+    @parametrize(
+        "order",
+        (
+            ((0, 1, 2), (0, 2, 1)),  # First BMM in hf_Reformer
+            ((0, 1, 2), (1, 2, 0)),  # First BMM in hf_DistilBert
+            ((0, 1, 2), (1, 0, 2)),  # Second BMM in hf_DistilBert, hf_T5
+            ((1, 0, 2), (0, 1, 2)),  # Third BMM in hf_Reformer
+            ((1, 0, 2), (1, 2, 0)),  # First in hf_T5
+        ),
+    )
     @dtypes(torch.float, torch.bfloat16, torch.half)
     def test_bmm_2d_permute(self, Ndim, order, dtype):
         # TODO(frost-intel): Support bmm with transposed X
@@ -1810,18 +1813,18 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
         inverse_order = [torch.argsort(torch.tensor(o)).tolist() for o in order]
 
         class M(torch.nn.Module):
-            def __init__(self, ):
+            def __init__(self):
                 super().__init__()
 
             def forward(self, x, w):
-                if order[0] != (0,1,2):
-                    new_x_order = [x_args[i] for i in inverse_order[0]]
-                    x = x.reshape(new_x_order[0], new_x_order[1]*new_x_order[2]).clone()
-                    x = x.reshape(*new_x_order).permute(*order[0])
-                if order[1] != (0,1,2):
-                    new_w_order = [w_args[i] for i in inverse_order[1]]
-                    w = w.reshape(new_w_order[0], new_w_order[1]*new_w_order[2]).clone()
-                    w = w.reshape(*new_w_order).permute(*order[1])
+                if order[0] != (0, 1, 2):
+                    x_order = [x_args[i] for i in inverse_order[0]]
+                    x = x.reshape(x_order[0], x_order[1] * x_order[2]).clone()
+                    x = x.reshape(*x_order).permute(*order[0])
+                if order[1] != (0, 1, 2):
+                    w_order = [w_args[i] for i in inverse_order[1]]
+                    w = w.reshape(w_order[0], w_order[1] * w_order[2]).clone()
+                    w = w.reshape(*w_order).permute(*order[1])
                 y = x @ w
                 return y
 
@@ -1832,15 +1835,15 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
         with verify(dtype) as (atol, rtol):
             self.common(mod, (u, v), atol=atol, rtol=rtol)
         self.assertEqual(
-            counters["inductor"]["select_algorithm_autotune"], 
-            1 if order[0] == (0,1,2) else 0
+            counters["inductor"]["select_algorithm_autotune"],
+            1 if order[0] == (0, 1, 2) else 0,
         )
 
     @inductor_config.patch({"freezing": True})
     @patches
     @torch.no_grad
     @unittest.skipIf(not TEST_MKL, "Test requires MKL")
-    @parametrize("bs", (5, ))
+    @parametrize("bs", (5,))
     @parametrize("Mdim", (64,))
     @parametrize("Kdim", (96,))
     @dtypes(torch.float, torch.float16, torch.bfloat16)
@@ -1864,9 +1867,9 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
     @patches
     @torch.no_grad
     @unittest.skipIf(not TEST_MKL, "Test requires MKL")
-    @parametrize("bs", (5, ))
+    @parametrize("bs", (5,))
     @parametrize("Mdim", (64,))
-    @dtypes(torch.float,)
+    @dtypes(torch.float)
     def test_bmm_self_square(self, bs, Mdim, dtype):
 
         class M(torch.nn.Module):
