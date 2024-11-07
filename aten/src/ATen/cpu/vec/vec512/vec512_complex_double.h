@@ -30,14 +30,14 @@ public:
     return 4;
   }
   Vectorized() {}
-  Vectorized(__m512d v) : values(v) {}
-  Vectorized(c10::complex<double> val) {
+  constexpr Vectorized(__m512d v) : values(v) {}
+  constexpr Vectorized(c10::complex<double> val) {
     double real_value = val.real();
     double imag_value = val.imag();
     values = _mm512_setr_pd(real_value, imag_value, real_value, imag_value,
                             real_value, imag_value, real_value, imag_value);
   }
-  Vectorized(c10::complex<double> val1, c10::complex<double> val2,
+  constexpr Vectorized(c10::complex<double> val1, c10::complex<double> val2,
             c10::complex<double> val3, c10::complex<double> val4) {
     values = _mm512_setr_pd(val1.real(), val1.imag(),
                             val2.real(), val2.imag(),

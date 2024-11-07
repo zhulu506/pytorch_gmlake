@@ -31,11 +31,11 @@ public:
     return 8;
   }
   Vectorized() {}
-  Vectorized(__m512d v) : values(v) {}
-  Vectorized(double val) {
+  constexpr Vectorized(__m512d v) : values(v) {}
+  constexpr Vectorized(double val) {
     values = _mm512_set1_pd(val);
   }
-  Vectorized(double val1, double val2, double val3, double val4,
+  constexpr Vectorized(double val1, double val2, double val3, double val4,
          double val5, double val6, double val7, double val8) {
     values = _mm512_setr_pd(val1, val2, val3, val4, val5, val6, val7, val8);
   }
