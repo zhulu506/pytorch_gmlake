@@ -252,18 +252,24 @@ def repro_get_args(options, exported_program, config_patches):
 
 
 def repro_run(options, exported_program, config_patches):
-    from torch._inductor import _aoti_compile_and_package_inner, aoti_load_package
+    from torch._inductor import (
+        _aoti_compile_and_package_inner,
+        _flatten_inputs,
+        aoti_load_package,
+    )
 
-    mod, args, kwargs = repro_common(options, exported_program)
+    gm, args, kwargs = repro_common(options, exported_program)
 
+    flat_example_inputs, local_config_patches = _flatten_inputs(
+        gm, args, kwargs, options=config_patches
+    )
     from torch.cuda import synchronize
 
     package_path = _aoti_compile_and_package_inner(
-        mod,
-        args,
-        kwargs,
+        gm,
+        flat_example_inputs,
         load_and_run=False,
-        inductor_configs=config_patches,
+        inductor_configs=local_config_patches,
     )
     compiled = aoti_load_package(package_path)
     assert not isinstance(compiled, str)
@@ -308,9 +314,12 @@ def export_for_aoti_minifier(gm, tuple_inputs) -> Optional[torch.nn.Module]:
 
 def repro_minify(options, exported_program, config_patches):
     from functorch.compile import minifier
-    from torch._inductor import _aoti_compile_and_package_inner
+    from torch._inductor import _aoti_compile_and_package_inner, _flatten_inputs
 
     mod, args, kwargs = repro_common(options, exported_program)
+    flat_example_inputs, inductor_configs = _flatten_inputs(
+        mod, args, kwargs, options=config_patches
+    )
     compiler_name = "aot_inductor"
 
     from torch.cuda import synchronize
@@ -323,7 +332,7 @@ def repro_minify(options, exported_program, config_patches):
             break
 
     def module_fails(gm, flat_example_inputs, check_str=None):
-        # we have to export first so the in_spec and out_spec are populated
+        # Need to export first so the in_spec and out_spec are populated
         tuple_inputs = tuple(flat_example_inputs)
         gm = export_for_aoti_minifier(gm, tuple_inputs)
 
@@ -332,13 +341,17 @@ def repro_minify(options, exported_program, config_patches):
         if gm is None:
             return False
 
+        # update serialized_in_spec and serialized_out_spec
+        flat_example_inputs, local_config_patches = _flatten_inputs(
+            gm, tuple_inputs, options=config_patches
+        )
+
         try:
             _aoti_compile_and_package_inner(
                 gm,
                 tuple_inputs,
-                kwargs,
                 load_and_run=True,
-                inductor_configs=config_patches,
+                inductor_configs=local_config_patches,
             )
             if need_sync:
                 synchronize()  # ensure segfaults are surfaced
@@ -350,7 +363,7 @@ def repro_minify(options, exported_program, config_patches):
 
     minifier(
         mod,
-        args,
+        flat_example_inputs,
         module_fails=functools.partial(module_fails, check_str=options.check_str),
         dump_state=functools.partial(
             dump_compiler_graph_state,
