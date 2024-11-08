@@ -5,8 +5,6 @@ from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING, Union
 
 import torch._inductor.config
 import torch.fx
-import torch.utils._pytree as pytree
-
 
 if TYPE_CHECKING:
     from torch._inductor.utils import InputType
@@ -83,6 +81,9 @@ def aoti_compile_and_package(
     """
     from torch.export import ExportedProgram
 
+    from .compile_fx import _flatten_inputs
+    from .debug import aot_inductor_minifier_wrapper
+
     if not isinstance(exported_program, ExportedProgram):
         raise ValueError("Only ExportedProgram is supported")
 
@@ -112,24 +113,28 @@ def aoti_compile_and_package(
         )
 
     args, kwargs = exported_program.example_inputs
+    gm = exported_program.module()
+
+    flat_example_inputs, options = _flatten_inputs(
+        gm, args, kwargs, options=inductor_configs
+    )
 
     # a wrapper around aoti_compile_and_package_inner.
-    return aoti_compile_and_package_debug_wrapper(
+    return aot_inductor_minifier_wrapper(
+        _aoti_compile_and_package_inner,
         exported_program,
-        args,
-        kwargs,
+        gm,
+        flat_example_inputs,
         package_path=package_path,
-        inductor_configs=inductor_configs,
+        inductor_configs=options,
     )
 
 
 def _aoti_compile_and_package_inner(
     gm: torch.fx.GraphModule,
     flat_example_inputs: Tuple[Any],
-    # args: Tuple[Any],
-    # kwargs: Optional[Dict[str, Any]] = None,
     *,
-    inductor_configs: Optional[Dict[str, Any]],
+    inductor_configs: Dict[str, Any],
     load_and_run: bool = False,
     package_path: Optional[str] = None,
 ):
@@ -141,9 +146,8 @@ def _aoti_compile_and_package_inner(
     If `load_and_run` is True, this function will load the compiled model and run it.
     This is for the minifier to check the correctness of the compiled model.
     """
-    from torch._inductor.package import package_aoti
-
     from .compile_fx import compile_fx_aot
+    from .package import package_aoti
 
     aoti_files = compile_fx_aot(
         gm,
@@ -175,47 +179,6 @@ def _aoti_compile_and_package_inner(
     return package_path
 
 
-def aoti_compile_and_package_debug_wrapper(
-    exported_program,
-    args: Tuple[Any],
-    kwargs: Optional[Dict[str, Any]] = None,
-    *,
-    package_path: Optional[str] = None,
-    inductor_configs: Optional[Dict[str, Any]] = None,
-):
-    gm = exported_program.module()
-
-    flat_example_inputs, options = _flatten_inputs(
-        gm, args, kwargs, options=inductor_configs
-    )
-
-    use_minifier = torch._inductor.config.aot_inductor.dump_aoti_minifier
-
-    try:
-        return _aoti_compile_and_package_inner(
-            gm,
-            flat_example_inputs,
-            load_and_run=use_minifier,
-            package_path=package_path,
-            inductor_configs=options,
-        )
-
-    except Exception as e:
-        if use_minifier:
-            # TODO: check accuracy and re-direct to minifier
-            from torch._dynamo.repro.aoti import dump_to_minify
-
-            exported_program._example_inputs = (args, kwargs)
-
-            dump_to_minify(
-                exported_program,
-                "compile_fx_aot",
-                options=inductor_configs,
-            )
-
-        raise e
-
-
 def aoti_load_package(path: str) -> Any:  # type: ignore[type-arg]
     """
     Loads the model from the PT2 package.
@@ -237,6 +200,7 @@ def aoti_load_package(path: str) -> Any:  # type: ignore[type-arg]
     return load_package(path)
 
 
+<<<<<<< HEAD
 def _flatten_inputs(
     gm: torch.fx.GraphModule,
     args: Tuple[Any],
@@ -328,6 +292,8 @@ def _flatten_inputs(
     return flat_example_inputs, options
 
 
+=======
+>>>>>>> b1833820b91 (refactor)
 def aot_compile(
     gm: torch.fx.GraphModule,
     args: Tuple[Any],
@@ -347,7 +313,7 @@ def aot_compile(
     Returns:
         Path to the generated shared library
     """
-    from .compile_fx import compile_fx_aot
+    from .compile_fx import _flatten_inputs, compile_fx_aot
 
     flat_example_inputs, options = _flatten_inputs(gm, args, kwargs, options=options)
 
