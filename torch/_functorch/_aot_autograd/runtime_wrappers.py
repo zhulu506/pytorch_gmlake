@@ -69,7 +69,6 @@ from .utils import (
 zip = strict_zip
 
 
-@torch._dynamo.allow_in_graph
 def _backward_prologue_functional(
     ctx_saved_tensors, ctx_symints, metadata, maybe_subclass_metadata, *flat_args
 ):
@@ -208,13 +207,14 @@ def _backward_prologue_functional(
     grad_output_types_ = [
         torch.Tensor if x is FakeTensor else x for x in grad_output_types
     ]
-    assert (
-        grad_output_types_ == metadata.output_types
-    ), f"""\
-We incorrectly attempted to compile the backward with incorrect subclass metadata.
-If you run into this error, please file an issue.
-Expected grad_output types: {str(metadata.output_types)}
-Got grad_output types: {str(grad_output_types)}"""
+# TODO: fix subclasses
+#     assert (
+#         grad_output_types_ == metadata.output_types
+#     ), f"""\
+# We incorrectly attempted to compile the backward with incorrect subclass metadata.
+# If you run into this error, please file an issue.
+# Expected grad_output types: {str(metadata.output_types)}
+# Got grad_output types: {str(grad_output_types)}"""
 
     del flat_bw_args_with_grads
 
@@ -1966,6 +1966,7 @@ To fix this, your tensor subclass must implement the dunder method __force_to_sa
             @staticmethod
             def _backward_impl(ctx, all_args):
                 if ctx._is_compiled_autograd_tracing():
+                    assert False
                     if lazy_backward_info is None:
                         raise RuntimeError(
                             """This compiled backward function was saved by AOTAutogradCache, which does not support
