@@ -170,6 +170,18 @@ class SymNode:
 
     @property
     def expr(self):
+        result = self.expr_allow_custom_add
+        # We make sure that CustomAdd is not leaking outside the construction loop.
+        # This is needed to allow Add(a, b) == CustomAdd(a, b) to be true.
+        if isinstance(result, torch.utils._sympy.functions.CustomAdd):
+            import sympy
+
+            return sympy.Add(*result._args, evaluate=False)
+
+        return result
+
+    @property
+    def expr_allow_custom_add(self):
         return self.shape_env.replace(self._expr)
 
     @property
@@ -710,6 +722,12 @@ def _sympy_floordiv(a, b):
     return FloorDiv(a, b)
 
 
+def _sympy_add(a, b):
+    from torch.utils._sympy.functions import CustomAdd
+
+    return CustomAdd(a, b, optimize_incremental_summations=True)
+
+
 def _sympy_mod(a, b):
     from torch.utils._sympy.functions import Mod, PythonMod
 
@@ -756,7 +774,7 @@ def _sympy_rshift(a, b):
 
 
 reflectable_magic_methods = {
-    "add": operator.add,
+    "add": _sympy_add,
     "sub": operator.sub,
     "mul": operator.mul,
     "mod": _sympy_mod,
@@ -1134,6 +1152,8 @@ def _make_node_magic(method, func):
                     out = Mod(self.expr, other.expr)
                 else:
                     out = PythonMod(self.expr, other.expr)
+            elif method == "add":
+                out = func(self.expr_allow_custom_add, other.expr_allow_custom_add)
             else:
                 # TODO: consider constant prop here
                 out = func(self.expr, other.expr)
