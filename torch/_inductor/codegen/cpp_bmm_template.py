@@ -25,7 +25,7 @@ GEMM_SINGLE_THREAD_MM_STUB = r"""
     outputs={"Y": Y},
     aliases=aliases,
     function_name="single_thread_mm",
-    symbols=[b_index],
+    custom_sizevars=[b_index],
     placeholder="<SINGLE_THREAD_DEF_MM_FOR_BMM>")}}"""
 
 GEMM_THREADED_MM_STUB = r"""
@@ -34,7 +34,7 @@ GEMM_THREADED_MM_STUB = r"""
     outputs={"Y": Y},
     aliases=aliases,
     function_name="threaded_mm",
-    symbols=[b_index],
+    custom_sizevars=[b_index],
     placeholder="<THREADED_MM_DEF_FOR_BMM>")}}"""
 
 BMM_WRAPPER = r"""
@@ -124,7 +124,6 @@ class CppBmmTemplate(CppGemmTemplate):
     @staticmethod
     def pack_vnni_weight_irnode(W, micro_gemm, new_size):
         # new_size = [-1, padded_n // block_n, k, block_n]
-        # TODO: (frost-intel): For non-constant packed weights, do this VNNI conversion at microkernel level
         k = new_size[-2]
         if not isinstance(W, ir.TensorBox):
             W = ir.TensorBox(W)
@@ -153,7 +152,6 @@ class CppBmmTemplate(CppGemmTemplate):
         Args:
             placeholder: The string to replace the function call with
             b_index: The index for slicing the 3D batch tensors
-            nodes: The 3D batch tensors
         """
 
         def hook():
@@ -185,7 +183,7 @@ class CppBmmTemplate(CppGemmTemplate):
         epilogue_nodes: Optional[List[ir.IRNode]] = None,
         **kwargs,
     ) -> Tuple[Dict[str, Any], List[ir.Buffer]]:
-        options, fake_buffers = super().get_options(
+        options = super().get_options(
             kernel=kernel,
             template_buffer_node=template_buffer_node,
             flag_template_buffer_has_other_users=flag_template_buffer_has_other_users,
@@ -204,7 +202,7 @@ class CppBmmTemplate(CppGemmTemplate):
             options[kword + "_dtype"] = DTYPE_TO_CPP[options[kword].dtype]
         options["b_index"] = self.b_index
 
-        return options, fake_buffers
+        return options
 
     def render(  # type: ignore[override, return]
         self,
@@ -214,7 +212,7 @@ class CppBmmTemplate(CppGemmTemplate):
         epilogue_nodes: Optional[List[ir.IRNode]] = None,
         **kwargs,
     ) -> str:
-        options, fake_buffers = self.get_options(
+        options = self.get_options(
             kernel=kernel,
             template_buffer_node=template_buffer_node,
             flag_template_buffer_has_other_users=flag_template_buffer_has_other_users,
@@ -223,7 +221,7 @@ class CppBmmTemplate(CppGemmTemplate):
         )
 
         with contextlib.ExitStack() as stack:
-            for buf in fake_buffers:
+            for buf in options['fake_buffers']:
                 stack.enter_context(
                     patch.object(V.graph, "get_dtype", self._fake_get_dtype(buf))
                 )

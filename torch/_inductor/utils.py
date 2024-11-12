@@ -1291,17 +1291,9 @@ def _use_template_for_cpu(layout):
 
 
 def use_cpp_bmm_template(layout, mat1, mat2):
-    def stride_is_decreasing(x):
-        x.freeze_layout()
-        stride = x.get_stride()
-        return all(
-            not isinstance(stride[i], sympy.AtomicExpr) or stride[i] > stride[i + 1]
-            for i in range(len(stride) - 1)
-        )
-
     return use_cpp_gemm_template(
         layout, mat1, mat2, require_constant_mat2=False
-    ) and stride_is_decreasing(mat1)
+    ) and mat1.layout.is_contiguous()
 
 
 def use_cpp_gemm_template(

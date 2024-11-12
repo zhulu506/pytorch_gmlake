@@ -57,7 +57,7 @@ class CppTemplateKernel(CppKernel):
         outputs: Dict[str, ir.Buffer],
         aliases: Optional[Dict[str, str]] = None,
         function_name: str = "",
-        symbols: Optional[List[sympy.Expr]] = None,
+        custom_sizevars: Optional[List[sympy.Expr]] = None,
         placeholder: str = "<DEF_KERNEL>",
     ) -> str:
         if len(function_name) == 0:
@@ -84,7 +84,7 @@ class CppTemplateKernel(CppKernel):
         }
         unique_sizevars |= {
             s
-            for sym in symbols or []
+            for sym in custom_sizevars or []
             if isinstance(sym, sympy.Expr)
             for s in sym.free_symbols
         }
@@ -165,7 +165,8 @@ class CppTemplateKernel(CppKernel):
         return sliced.data
 
     def select(self, node, dim: int, idx: int) -> ir.ReinterpretView:
-        # We avoid using L.select here because we need clamp=False
+        # We avoid using L.select here because we need clamp=False so the dim after slicing
+        # is 1 instead of a sympy expression of symbol - dim_size.
         node = wrap_with_tensorbox(node)
         idx = ir.View.handle_negative_index(idx, node.get_size()[dim])
         sliced = L.squeeze(L.slice_(node, dim, idx, idx + 1, clamp=False), dim)

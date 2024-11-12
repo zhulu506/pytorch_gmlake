@@ -603,6 +603,7 @@ class CppGemmTemplate(CppTemplate):
                 assert len(input_indices) >= 2
                 return [inputs[idx] for idx in input_indices], layout_or_out
             else:
+                # For when input is used for x and w, i.e. X@X.T or similar
                 # Assumes the first input is the only input
                 return [inputs[0]] * len(input_indices), layout_or_out
 
@@ -631,12 +632,13 @@ class CppGemmTemplate(CppTemplate):
         def normalize_shapes(inputs, layout_or_out):
             new_inputs = list(inputs)
             if not is_mkldnn_wgt and isinstance(new_inputs[1], torch.Tensor):
-                # With the assumptation that W is the storage of unwrap view
-                # thus view it back here
                 if view_size[0].is_symbol:
+                    # If batch size B is dynamic, we need to infer the batch size from the input
                     size = torch.tensor(new_inputs[1].size()).prod()
                     fixed_size = torch.tensor(view_size[1:], dtype=torch.int).prod()
                     view_size[0] = (size // fixed_size).item()
+                # With the assumptation that W is the storage of unwrap view
+                # thus view it back here
                 new_inputs[1] = new_inputs[1].as_strided(
                     view_size, view_stride, view_offset
                 )
@@ -765,26 +767,25 @@ class CppGemmTemplate(CppTemplate):
                 new_input_nodes, _ = reorder_and_filter(input_nodes, layout)
 
                 W_node = new_input_nodes[1]
-                weight_is_constant = W_node.get_name() in V.graph.constants
-                if weight_is_constant:
+                if W_node.get_name() in V.graph.constants:
                     W = V.graph.constants[W_node.get_name()]
                     new_input_nodes[1] = W
-                new_input_nodes, new_layout = normalize_shapes(
-                    *maybe_to_dense(new_input_nodes, layout)
-                )
-                new_input_nodes, _ = cls.prep_weight(
-                    new_input_nodes, new_layout, micro_gemm
-                )
-                W_packed = new_input_nodes[1]
-                if weight_is_constant:
-                    W_packed = V.graph.add_tensor_constant(W_packed)
-                    new_input_nodes[1] = W_packed
+                    new_input_nodes, new_layout = normalize_shapes(
+                        *maybe_to_dense(new_input_nodes, layout)
+                    )
+                    new_input_nodes, _ = cls.prep_weight(
+                        new_input_nodes, new_layout, micro_gemm
+                    )
+                    W_packed = new_input_nodes[1]
+                    W_packed_constant = V.graph.add_tensor_constant(W_packed)
+                    new_input_nodes[1] = W_packed_constant
 
-                # Prune unused tensors
-                prune_tensors(input_nodes, new_input_nodes)
-                template_buffer.inputs[1] = ir.InputsKernel.unwrap_storage_for_input(
-                    W_packed
-                )
+                    # Prune unused tensors
+                    prune_tensors(input_nodes, new_input_nodes)
+                    
+                    template_buffer.inputs[1] = ir.InputsKernel.unwrap_storage_for_input(
+                        W_packed_constant
+                    )
             return output
 
         template = DataProcessorTemplateWrapper(
@@ -814,6 +815,24 @@ class CppGemmTemplate(CppTemplate):
 
     @classmethod
     def prep_weight(cls, inputs, layout, micro_gemm):
+        """
+        NOTE Weight prep consists of 3 separate steps:
+        1. Blocking the weight tensor into a 3D shape: [n//block_n, k, block_n]
+           This is only done for GEMM, and assumes the weight tensor is constant.
+        2. Padding the weight tensor along the n-dimension to be a multiple of block_n.
+           This allows a more efficient microkernel implementation.
+        3. Packing the weight tensor into a VNNI-friendly shape. For constant GEMM, 
+           this is done at the same time as the weight blocking.
+        Subclasses can override the functions for each of the cases as necessary:
+            - get_padded_size
+            - block_weight_irnode
+            - maybe_pad_weight
+            - pack_vnni_weight_irnode
+            - block_weight_tensor
+            - pack_vnni_weight_tensor
+        For example, the CppBmmTemplate overrides get_padded_size, block_weight_irnode, and 
+        pack_vnni_weight_irnode in order to accommodate an additional dimension for the batch size.
+        """
         should_block_weight = (
             cls == CppGemmTemplate or micro_gemm.get_b_layout() != LayoutType.NORMAL
         )
@@ -902,6 +921,7 @@ class CppGemmTemplate(CppTemplate):
 
     @staticmethod
     def pack_vnni_weight_irnode(W, micro_gemm, new_size):
+        assert W.get_name() in V.graph.constants
         return W
 
     @staticmethod
@@ -918,6 +938,7 @@ class CppGemmTemplate(CppTemplate):
 
     @staticmethod
     def pack_vnni_weight_tensor(W, micro_gemm, new_size):
+        # TODO: Move VNNI weight packing for non-constant tensors into the template
         k = new_size[-2]
         if micro_gemm.get_b_layout() != LayoutType.NORMAL:
             layout_str = (
@@ -1227,8 +1248,9 @@ class CppGemmTemplate(CppTemplate):
             L1_cache_size=L1_cache_size,
             L2_cache_size=L2_cache_size,
             config=config,
+            fake_buffers=fake_buffers,
         )
-        return options, fake_buffers
+        return options
 
     def render(  # type: ignore[override, return]
         self,
@@ -1238,7 +1260,7 @@ class CppGemmTemplate(CppTemplate):
         epilogue_nodes: Optional[List[ir.IRNode]] = None,
         **kwargs,
     ) -> str:
-        options, fake_buffers = self.get_options(
+        options = self.get_options(
             kernel=kernel,
             template_buffer_node=template_buffer_node,
             flag_template_buffer_has_other_users=flag_template_buffer_has_other_users,
@@ -1247,7 +1269,7 @@ class CppGemmTemplate(CppTemplate):
 
         full_template = MICROKERNEL_DEF + GEMM_STUB + GEMM_TEMPLATE
         with contextlib.ExitStack() as stack:
-            for buf in fake_buffers:
+            for buf in options['fake_buffers']:
                 stack.enter_context(
                     patch.object(V.graph, "get_dtype", self._fake_get_dtype(buf))
                 )
