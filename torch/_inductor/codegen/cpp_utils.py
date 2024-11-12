@@ -466,9 +466,11 @@ def rewrite_index_for_function(
     global_buf_name: str,
 ):
     # Local buffer at the inner dimensions
-    snode = V.graph.scheduler.name_to_buf[global_buf_name].defining_op
-    local_buf = localize_buffer_handler.global_to_local[global_buf_name]
-    scheduler_nodes = snode.get_nodes()
+    scheduler_nodes = []
+    for buf in V.graph.scheduler.name_to_buf[global_buf_name]:
+        snode = buf.defining_op
+        local_buf = localize_buffer_handler.global_to_local[global_buf_name]
+        scheduler_nodes.append(snode.get_nodes())
     _, (group, reduction_group) = max(
         scheduler_nodes, key=lambda x: int(x.is_reduction())
     ).group

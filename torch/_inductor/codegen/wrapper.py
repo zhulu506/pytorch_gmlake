@@ -1363,6 +1363,8 @@ class PythonWrapperCodegen(CodeGen):
         self.writeline(f"{dst}.copy_({src}, {non_blocking})")
 
     def codegen_multi_output(self, name, value):
+        if name == value:
+            return
         self.writeline(f"{self.declare}{name} = {value}{self.ending}")
 
     def codegen_dynamic_scalar(self, node):

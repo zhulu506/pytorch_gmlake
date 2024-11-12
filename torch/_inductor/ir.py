@@ -6563,7 +6563,10 @@ class MultiOutput(ExternKernel):
     def __init__(self, layout, input, indices: List[Tuple[Any, ...]]) -> None:  # type: ignore[no-untyped-def]
         super().__init__(None, layout, [input], ())
         self.name = V.graph.register_buffer(self)
-        V.graph.register_operation(self)
+        if input is not tuple or input is not list:
+            self.name = input.get_name()
+        else:
+            self.name = V.graph.register_buffer(self)
         self.indices = indices
 
     def get_unbacked_symbol_uses(self) -> OrderedSet[sympy.Symbol]:

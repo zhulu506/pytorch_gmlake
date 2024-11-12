@@ -4404,9 +4404,10 @@ class CppScheduling(BaseScheduling):
                                 if local_buffer_layout == local_buf.layout and all(
                                     all(
                                         user.node.get_name() in visited_scheduler_nodes
-                                        for user in V.graph.scheduler.name_to_buf[
+                                        for buf in V.graph.scheduler.name_to_buf[
                                             global_buffer.name
-                                        ].users
+                                        ]
+                                        for user in buf.users
                                     )
                                     for global_buffer in local_to_global_buffers[
                                         local_buf.name

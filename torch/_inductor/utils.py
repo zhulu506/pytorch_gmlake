@@ -1758,7 +1758,10 @@ def is_fallback_op(node, op):
 
 
 def buf_name_to_fused_snode(buf_name, name_to_buf, name_to_fused_node):
-    return name_to_fused_node[name_to_buf[buf_name].defining_op.get_name()]
+    nodes = []
+    for buf in name_to_buf[buf_name]:
+        nodes.append(name_to_fused_node[buf.defining_op.get_name()])
+    return nodes
 
 
 def find_recursive_deps_of_node(
@@ -1768,18 +1771,18 @@ def find_recursive_deps_of_node(
         return
     collected_node_set.add(snode)
     for dep in snode.unmet_dependencies:
-        defining_op_for_dep = buf_name_to_fused_snode(
+        for defining_op_for_dep in buf_name_to_fused_snode(
             dep.name, name_to_buf, name_to_fused_node
-        )
-        if defining_op_for_dep in collected_node_set:
-            continue
-        find_recursive_deps_of_node(
-            defining_op_for_dep,
-            collected_node_set,
-            name_to_buf,
-            name_to_fused_node,
-            criteria_cb=criteria_cb,
-        )
+        ):
+            if defining_op_for_dep in collected_node_set:
+                continue
+            find_recursive_deps_of_node(
+                defining_op_for_dep,
+                collected_node_set,
+                name_to_buf,
+                name_to_fused_node,
+                criteria_cb=criteria_cb,
+            )
 
 
 def find_recursive_users_of_node(
