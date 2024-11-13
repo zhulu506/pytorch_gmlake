@@ -6446,9 +6446,7 @@ class FallbackKernel(ExternKernelAlloc):
                 unflatten_args,
                 unbacked_bindings=unbacked_bindings,
             )
-        elif (not isinstance(example_output, tuple)) and (
-            not isinstance(example_output, list)
-        ):
+        elif not isinstance(example_output, (tuple, list)):
             packed = cls(
                 cls.tensor_to_layout(example_output),
                 kernel,
@@ -6457,7 +6455,6 @@ class FallbackKernel(ExternKernelAlloc):
                 unflatten_args,
                 unbacked_bindings=unbacked_bindings,
             )
-            packed.outputs = [packed]
             return packed
         else:
             assert device, "Not sure where to find device info"
