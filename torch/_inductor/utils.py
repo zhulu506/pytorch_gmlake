@@ -1291,9 +1291,10 @@ def _use_template_for_cpu(layout):
 
 
 def use_cpp_bmm_template(layout, mat1, mat2):
-    return use_cpp_gemm_template(
-        layout, mat1, mat2, require_constant_mat2=False
-    ) and mat1.layout.is_contiguous()
+    return (
+        use_cpp_gemm_template(layout, mat1, mat2, require_constant_mat2=False)
+        and mat1.layout.is_contiguous()
+    )
 
 
 def use_cpp_gemm_template(

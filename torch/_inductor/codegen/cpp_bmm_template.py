@@ -1,6 +1,6 @@
 # mypy: allow-untyped-defs
 import contextlib
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 from unittest.mock import patch
 
 import sympy
@@ -81,7 +81,7 @@ class CppBmmTemplate(CppGemmTemplate):
         alpha=1,
         has_bias=False,
         epilogue_creator: Optional[Callable[[ir.Buffer], ir.Pointwise]] = None,
-        should_block_weights = False,
+        should_block_weights: bool = False,
         name="bmm",
     ):
         super().__init__(
@@ -141,9 +141,10 @@ class CppBmmTemplate(CppGemmTemplate):
 
     @classmethod
     def check_if_block_weight(cls, W, micro_gemm):
-        return (
-            micro_gemm.get_b_layout() != LayoutType.NORMAL
-            or not W.layout.is_contiguous() if isinstance(W, ir.IRNode) else not W.is_contiguous()
+        return micro_gemm.get_b_layout() != LayoutType.NORMAL or (
+            not W.get_layout().is_contiguous()
+            if isinstance(W, ir.IRNode)
+            else not W.is_contiguous()
         )
 
     def get_gemm_function_call(
@@ -189,7 +190,7 @@ class CppBmmTemplate(CppGemmTemplate):
         flag_template_buffer_has_other_users: Optional[bool] = None,
         epilogue_nodes: Optional[List[ir.IRNode]] = None,
         **kwargs,
-    ) -> Tuple[Dict[str, Any], List[ir.Buffer]]:
+    ) -> Dict[str, Any]:
         options = super().get_options(
             kernel=kernel,
             template_buffer_node=template_buffer_node,
@@ -226,7 +227,7 @@ class CppBmmTemplate(CppGemmTemplate):
         )
 
         with contextlib.ExitStack() as stack:
-            for buf in options['fake_buffers']:
+            for buf in options["fake_buffers"]:
                 stack.enter_context(
                     patch.object(V.graph, "get_dtype", self._fake_get_dtype(buf))
                 )

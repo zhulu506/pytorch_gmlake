@@ -3,7 +3,7 @@ import contextlib
 import logging
 import math
 from functools import lru_cache
-from typing import Any, Callable, cast, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Callable, cast, Dict, List, Optional, Set, Union
 from unittest.mock import patch
 
 import torch
@@ -768,25 +768,26 @@ class CppGemmTemplate(CppTemplate):
                 new_input_nodes, _ = reorder_and_filter(input_nodes, layout)
 
                 W_node = new_input_nodes[1]
-                if W_node.get_name() in V.graph.constants:
-                    W = V.graph.constants[W_node.get_name()]
-                    new_input_nodes[1] = W
-                    new_input_nodes, new_layout = normalize_shapes(
-                        *maybe_to_dense(new_input_nodes, layout)
-                    )
-                    new_input_nodes, _ = cls.prep_weight(
-                        new_input_nodes, new_layout, micro_gemm
-                    )
-                    W_packed = new_input_nodes[1]
-                    W_packed_constant = V.graph.add_tensor_constant(W_packed)
-                    new_input_nodes[1] = W_packed_constant
+                if W_node.get_name() not in V.graph.constants:
+                    return output
+                W = V.graph.constants[W_node.get_name()]
+                new_input_nodes[1] = W
+                new_input_nodes, new_layout = normalize_shapes(
+                    *maybe_to_dense(new_input_nodes, layout)
+                )
+                new_input_nodes, _ = cls.prep_weight(
+                    new_input_nodes, new_layout, micro_gemm
+                )
+                W_packed = new_input_nodes[1]
+                W_packed_constant = V.graph.add_tensor_constant(W_packed)
+                new_input_nodes[1] = W_packed_constant
 
-                    # Prune unused tensors
-                    prune_tensors(input_nodes, new_input_nodes)
-                    
-                    template_buffer.inputs[1] = ir.InputsKernel.unwrap_storage_for_input(
-                        W_packed_constant
-                    )
+                # Prune unused tensors
+                prune_tensors(input_nodes, new_input_nodes)
+
+                template_buffer.inputs[1] = ir.InputsKernel.unwrap_storage_for_input(
+                    W_packed_constant
+                )
             return output
 
         block_weights = cls.check_if_block_weight(new_inputs[1], micro_gemm)
@@ -825,7 +826,7 @@ class CppGemmTemplate(CppTemplate):
            For BMM, we block non-contiguous weight tensors, since they would be reshaped anyway.
         2. Padding the weight tensor along the n-dimension to be a multiple of block_n.
            This allows a more efficient microkernel implementation.
-        3. Packing the weight tensor into a VNNI-friendly shape. For constant GEMM, 
+        3. Packing the weight tensor into a VNNI-friendly shape. For constant GEMM,
            this is done at the same time as the weight blocking.
         Subclasses can override the functions for each of the cases as necessary:
             - get_padded_size
@@ -834,7 +835,7 @@ class CppGemmTemplate(CppTemplate):
             - pack_vnni_weight_irnode
             - block_weight_tensor
             - pack_vnni_weight_tensor
-        For example, the CppBmmTemplate overrides get_padded_size, block_weight_irnode, and 
+        For example, the CppBmmTemplate overrides get_padded_size, block_weight_irnode, and
         pack_vnni_weight_irnode in order to accommodate an additional dimension for the batch size.
         """
         W = inputs[1]
@@ -873,8 +874,7 @@ class CppGemmTemplate(CppTemplate):
                 isinstance(inputs[0], ir.IRNode)
                 and inputs[0].get_dtype() == torch.uint8
             ) or (
-                isinstance(inputs[0], torch.Tensor)
-                and inputs[0].dtype == torch.uint8
+                isinstance(inputs[0], torch.Tensor) and inputs[0].dtype == torch.uint8
             )
 
         if _is_int8_gemm(new_inputs):
@@ -973,7 +973,7 @@ class CppGemmTemplate(CppTemplate):
         template_buffer_node: Optional[ir.CppTemplateBuffer] = None,
         flag_template_buffer_has_other_users: Optional[bool] = None,
         epilogue_nodes: Optional[List[ir.IRNode]] = None,
-    ) -> Tuple[Dict[str, Any], List[ir.Buffer]]:
+    ) -> Dict[str, Any]:
         assert len(self.input_nodes) >= 2
 
         int8_gemm = self.input_nodes[0].get_dtype() == torch.uint8
@@ -1275,7 +1275,7 @@ class CppGemmTemplate(CppTemplate):
 
         full_template = MICROKERNEL_DEF + GEMM_STUB + GEMM_TEMPLATE
         with contextlib.ExitStack() as stack:
-            for buf in options['fake_buffers']:
+            for buf in options["fake_buffers"]:
                 stack.enter_context(
                     patch.object(V.graph, "get_dtype", self._fake_get_dtype(buf))
                 )
