@@ -2808,7 +2808,7 @@ class ReinterpretView(BaseView):
             self.layout.size,
             self.layout.stride,
             self.layout.offset,
-            writer,
+            writer.writeline if writer is not None else V.graph.wrapper_code.writeline,
             dtype=self.layout.dtype,
         )
 
@@ -4913,8 +4913,9 @@ class ExternKernel(InputsKernel):
         allow_padding=False,
     ):
         assert order is not None or exact_strides is not None
-        if x.get_numel() == 0:  # Layout doesn't matter
+        if x.get_numel() in (0, 1):  # Layout doesn't matter
             return x
+
         # require x to have the layout
         if is_storage_and_layout(x):
             while isinstance(x.get_layout(), NonOwningLayout):
@@ -5474,24 +5475,33 @@ class TMADescriptor(ExternKernel):
 
 
 class UserDefinedTritonKernel(ExternKernel):
-    def get_kernel_and_configs(self):  # type: ignore[no-untyped-def]
+    def get_kernel_and_metadata(self):  # type: ignore[no-untyped-def]
         from triton.runtime.autotuner import Autotuner
 
         from torch._higher_order_ops.triton_kernel_wrap import kernel_side_table
 
         kernel = kernel_side_table.get_kernel(self.kernel_idx)
         configs = []
+        restore_value_args = []
         if isinstance(kernel, Autotuner):
+            # https://github.com/triton-lang/triton/pull/5083
+            # changes kernel.restore_idx to kernel.restore_value
+            if hasattr(kernel, "restore_idx"):
+                for i in kernel.restore_idx:
+                    restore_value_args.append(kernel.fn.arg_names[i])
+            else:
+                assert hasattr(kernel, "restore_value")
+                restore_value_args.extend(kernel.restore_value)
             configs = kernel.configs
             kernel = kernel.fn
-        return kernel, configs
+        return kernel, configs, restore_value_args
 
     def codegen(self, wrapper) -> None:  # type: ignore[no-untyped-def]
-        kernel, configs = self.get_kernel_and_configs()
+        kernel, configs, restore_value_args = self.get_kernel_and_metadata()
 
         # Definition of kernel
         new_name, triton_meta = wrapper.define_user_defined_triton_kernel(
-            kernel, configs, self.kwargs
+            kernel, configs, self.kwargs, restore_value_args
         )
         raw_args = [
             self.get_kwargs_value(k) for k in self.ordered_kwargs_for_cpp_kernel
@@ -5598,7 +5608,7 @@ class UserDefinedTritonKernel(ExternKernel):
         self.kernel_idx = kernel_idx
         self.grid = grid
 
-        kernel, configs = self.get_kernel_and_configs()
+        kernel, configs, _ = self.get_kernel_and_metadata()
 
         # If we are autotuning, not all arguments will be passed
         self.ordered_kwargs_for_cpp_kernel = [
@@ -6775,12 +6785,15 @@ class InvokeSubgraph(ExternKernel):
         def handle_sym_expr(stride):  # type: ignore[no-untyped-def]
             return [s.node.expr if isinstance(s, torch.SymInt) else s for s in stride]
 
-        fake_strides = [fake_operand.stride() for fake_operand in fake_operands]
-        fake_strides = [handle_sym_expr(stride) for stride in fake_strides]
-        operands = [
-            cls.require_exact_strides(x, fake_strides[idx])
-            for idx, x in enumerate(operands)
-        ]
+        new_operands = []
+        for idx, operand in enumerate(operands):
+            if isinstance(operand, ShapeAsConstantBuffer):
+                new_operands.append(operand)
+            else:
+                example_stride = handle_sym_expr(fake_operands[idx].stride())
+                new_operands.append(cls.require_exact_strides(operand, example_stride))
+
+        operands = new_operands
 
         if subgraph.graph is None:
             # create and lower subgraphs
@@ -6793,7 +6806,16 @@ class InvokeSubgraph(ExternKernel):
                 subgraph.graph.run(*fake_operands)
 
         outputs = subgraph.graph.graph_outputs
-        device = operands[0].get_device()
+
+        # Find the device - operands could be integers from shapes, so we can't
+        # use operands[0]
+        device = None
+        for operand in operands:
+            if not isinstance(operand, ShapeAsConstantBuffer):
+                device = operand.get_device()
+                break
+        assert device is not None
+
         invoke_subgraph = InvokeSubgraph(
             subgraph=subgraph,
             operands=operands,
