@@ -75,7 +75,6 @@ hop_that_doesnt_have_opinfo_test_allowlist = [
     "triton_kernel_wrapper_mutation",
     "triton_kernel_wrapper_functional",
     "hints_wrapper",
-    # The following are ops that are internal to Inductor:
     "auto_functionalized",
     "auto_functionalized_v2",
     "wrap",
