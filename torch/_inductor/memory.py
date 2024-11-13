@@ -162,12 +162,11 @@ def compute_size_for_scheduler_buffer(
             )
             return buf_size
 
-    for sched_bufs in name_to_buf.values():
+    for sched_buf in name_to_buf.values():
         # skip if sched_buf is already processed as an user of another SchedulerBuffer
         # whose layout is of the type MultiOutputLayout
-        for sched_buf in sched_bufs:
-            if sched_buf.get_name() not in sched_buf_to_size:
-                _compute_and_update_buf_size(sched_buf)
+        if sched_buf.get_name() not in sched_buf_to_size:
+            _compute_and_update_buf_size(sched_buf)
 
     return sched_buf_to_size
 
@@ -195,12 +194,11 @@ def assign_memory_planning_info_for_scheduler_buffers(
     # populate the MemoryPlanningInfoForBuffer attribute to each scheduler buffer
     # note: there are scheduler buffers not in dep_name_to_succ_nodes (e.g., graph outputs)
     for buf_name in name_to_buf.keys():
-        for buf in name_to_buf[buf_name]:
-            buf.mpi_buffer = MemoryPlanningInfoForBuffer(
-                size_alloc=sched_buf_to_size[buf_name][0],
-                size_free=sched_buf_to_size[buf_name][1],
-                succ_nodes=dep_name_to_succ_nodes[buf_name],
-            )
+        name_to_buf[buf_name].mpi_buffer = MemoryPlanningInfoForBuffer(
+            size_alloc=sched_buf_to_size[buf_name][0],
+            size_free=sched_buf_to_size[buf_name][1],
+            succ_nodes=dep_name_to_succ_nodes[buf_name],
+        )
 
 
 def assign_memory_planning_info_for_scheduler_nodes(
@@ -221,8 +219,7 @@ def assign_memory_planning_info_for_scheduler_nodes(
         ] = OrderedSet()
         for dep in node.read_writes.reads:
             if dep.name in name_to_buf and dep in node.unmet_dependencies:
-                for buf in name_to_buf[dep.name]:
-                    pred_buffers.add(buf)
+                pred_buffers.add(name_to_buf[dep.name])
             elif dep.name in name_to_freeable_input_buf:
                 pred_buffers.add(name_to_freeable_input_buf[dep.name])
         pred_nodes = OrderedSet(
@@ -410,8 +407,7 @@ def topological_sort_lpmf(
     output_memory = 0
     for buf_name in graph_outputs:
         if buf_name in name_to_buf:
-            for buf in name_to_buf[buf_name]:
-                output_memory += buf.mpi_buffer.size_free
+            output_memory += name_to_buf[buf_name].mpi_buffer.size_free
         elif buf_name in name_to_freeable_input_buf:
             output_memory += name_to_freeable_input_buf[buf_name].mpi_buffer.size_free
     max_memory = max(live_memory, output_memory)
@@ -585,7 +581,7 @@ def topological_sort_dfs(nodes: List[BaseSchedulerNode]) -> List[BaseSchedulerNo
 
 def reorder_for_peak_memory(
     nodes: List[BaseSchedulerNode],
-    name_to_buf: Dict[str, List[SchedulerBuffer]],
+    name_to_buf: Dict[str, SchedulerBuffer],
     name_to_fused_node: Dict[str, BaseSchedulerNode],
     graph_inputs: Set[str],
     graph_outputs: Set[str],
