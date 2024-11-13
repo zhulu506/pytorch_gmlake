@@ -1222,6 +1222,33 @@ def log_trace_failure(search_fn: Callable[..., Any], e: RuntimeError) -> None:
     )
 
 
+def check_and_add_duplicate_pattern(
+    pattern: PatternExpr,
+    gm: Optional[torch.fx.GraphModule],
+    seen_patterns: Dict[str, List[Union[torch.fx.Graph, str, None]]],
+) -> None:
+    pattern_repr = PatternPrettyPrinter.run(pattern)
+    if equiv_pattern_reprs := seen_patterns.get(pattern_repr):
+        torch._check(
+            gm is not None
+            and not any(pattern_repr is None for pattern_repr in equiv_pattern_reprs),
+            lambda: f"Duplicate pattern: {pattern_repr} ",
+        )
+        if len(equiv_pattern_reprs) == 1:
+            equiv_pattern_reprs[0] = str(equiv_pattern_reprs[0])
+
+        assert gm is not None
+        new_graph_str = str(gm.graph)
+        for graph_str in equiv_pattern_reprs:
+            torch._check(
+                new_graph_str != graph_str,
+                f"Duplicate pattern: {pattern_repr} with duplicated match graph {graph_str} ",
+            )
+        equiv_pattern_reprs.append(new_graph_str)
+    else:
+        seen_patterns[pattern_repr].append(gm.graph if gm else None)
+
+
 def register_replacement(
     search_fn: SearchFn,
     replace_fn: ReplaceFn,
@@ -1383,7 +1410,7 @@ def register_replacement(
             isinstance(x, torch.Tensor) and x.requires_grad for x in example_inputs
         ]
         if search_fn_pattern is None:
-            pattern = gen_pattern(
+            pattern, gm = gen_pattern_and_search_gm(
                 search_fn,
                 example_inputs,
                 trace_fn,
@@ -1392,10 +1419,16 @@ def register_replacement(
             )
         else:
             pattern = search_fn_pattern
+            gm = None
 
-        pattern_repr = PatternPrettyPrinter.run(pattern)
-        assert pattern_repr not in _seen_patterns
-        _seen_patterns.add(pattern_repr)
+        for pattern_matcher_pass in (
+            pass_dicts if isinstance(pass_dicts, Sequence) else [pass_dicts]
+        ):
+            if isinstance(pattern_matcher_pass, PatternMatcherPass):
+                check_and_add_duplicate_pattern(
+                    pattern, gm, pattern_matcher_pass.seen_patterns
+                )
+
         pattern = ReplacementPatternEntry(
             pattern=pattern,
             extra_check=check_fn,
@@ -1411,7 +1444,7 @@ _serialized_patterns: Set[str] = set()
 def _serialize_pattern(
     unique_name: str,
     search_fn: SearchFn,
-    example_inputs: Iterable[Any],
+    example_inputs: Sequence[Any],
     trace_fn: TraceFn,
     scalar_workaround: Union[Dict[str, Union[float, int]], None],
 ) -> PatternExpr:
@@ -1496,6 +1529,8 @@ _known_precompiled_patterns: List[
     ]
 ] = []
 
+_gen_register_seen_patterns: Set[str] = set()
+
 
 def gen_register_replacement(
     unique_name: str,
@@ -1536,8 +1571,12 @@ def gen_register_replacement(
             # Since this is just an optimization we can clear it out.
             arg.constant = None
 
-    if PatternPrettyPrinter.run(pat) in _seen_patterns and skip_duplicates:
+    pat_pp = PatternPrettyPrinter.run(pat)
+    if pat_pp in _gen_register_seen_patterns and skip_duplicates:
         return
+
+    _gen_register_seen_patterns.add(pat_pp)
+
     _known_precompiled_patterns.append(
         (search_fn, example_inputs, trace_fn, scalar_workaround, pat)
     )
@@ -1555,13 +1594,13 @@ def gen_register_replacement(
 
 
 @functorch_config.patch(functionalize_rng_ops=False)
-def gen_pattern(
+def gen_pattern_and_search_gm(
     search_fn: SearchFn,
     example_inputs: Sequence[Any],
     trace_fn: TraceFn,
     scalar_workaround: Union[Dict[str, Union[float, int]], None] = None,
     exclusive_arg_names: Sequence[str] = (),
-) -> PatternExpr:
+) -> Tuple[PatternExpr, torch.fx.GraphModule]:
     argnames = [*inspect.signature(search_fn).parameters.keys()]
 
     if scalar_workaround is None:
@@ -1577,13 +1616,28 @@ def gen_pattern(
             input_idx += 1
 
     search_gm = trace_fn(search_fn, flat_inputs)
-    return fx_to_pattern(
+    return (
+        fx_to_pattern(
+            search_gm,
+            ignore_types=(int, float, list, torch.device, torch.dtype),
+            argnames=argnames,
+            scalar_workaround=scalar_workaround,
+            exclusive_arg_names=exclusive_arg_names,
+        ),
         search_gm,
-        ignore_types=(int, float, list, torch.device, torch.dtype),
-        argnames=argnames,
-        scalar_workaround=scalar_workaround,
-        exclusive_arg_names=exclusive_arg_names,
     )
+
+
+def gen_pattern(
+    search_fn: SearchFn,
+    example_inputs: Sequence[Any],
+    trace_fn: TraceFn,
+    scalar_workaround: Union[Dict[str, Union[float, int]], None] = None,
+    exclusive_arg_names: Sequence[str] = (),
+) -> PatternExpr:
+    return gen_pattern_and_search_gm(
+        search_fn, example_inputs, trace_fn, scalar_workaround, exclusive_arg_names
+    )[0]
 
 
 def register_lowering_pattern(
@@ -1713,6 +1767,16 @@ class PatternMatcherPass:
             Tuple[str, torch.fx.node.Target], List[PatternEntry]
         ] = defaultdict(list)
         self.pass_name = pass_name
+
+        # For a particular generated pattern repr, store all the equivalent
+        # patterns and the gm that used to generate them. Because we ignore certain patterns
+        # in searching, but not in matching, use the graph to distinguish if two equivalent
+        # searches are actually different.
+        # Element are first inserted as graphs and lazily converted to their str reprs when
+        # there is a duplicate. If the graph is not present we will error on duplicate
+        self.seen_patterns: Dict[
+            str, List[Union[torch.fx.Graph, str, None]]
+        ] = defaultdict(list)
 
     def __getitem__(self, item: Tuple[str, torch.fx.node.Target]) -> List[PatternEntry]:
         return self.patterns[item]
@@ -2017,9 +2081,6 @@ def clone_graph(input_graph: torch.fx.GraphModule) -> torch.fx.GraphModule:
             return new_node
 
     return CopyGraph(input_graph).transform()
-
-
-_seen_patterns: Set[str] = set()
 
 
 def get_arg_value(
