@@ -285,6 +285,7 @@ class CppGemmTemplate(CppTemplate):
         alpha=1,
         has_bias=False,
         epilogue_creator: Optional[Callable[[ir.Buffer], ir.Pointwise]] = None,
+        should_block_weights: bool = True,
         name="packed_gemm",
     ) -> None:
         assert layout.dtype in [torch.float, torch.bfloat16, torch.half, torch.uint8]
@@ -304,7 +305,7 @@ class CppGemmTemplate(CppTemplate):
         self.m, self.n, self.k = m, n, k
         self.padded_n = get_padded_n(n, self.register_blocking.block_n)
         self.is_dynamic_M = has_free_symbols((m,))
-        self.should_block_weights = True
+        self.should_block_weights = should_block_weights
         self.thread_blocking = self.make_thread_blocking_cache()
         self.cache_blocking = self.make_cache_blocking_cache()
 
@@ -788,6 +789,7 @@ class CppGemmTemplate(CppTemplate):
                     )
             return output
 
+        block_weights = cls.check_if_block_weight(new_inputs[1], micro_gemm)
         template = DataProcessorTemplateWrapper(
             cls,
             preprocessor,
@@ -800,6 +802,7 @@ class CppGemmTemplate(CppTemplate):
             alpha=alpha,
             has_bias=has_bias,
             epilogue_creator=epilogue_creator,
+            should_block_weights=block_weights,
         )
         template.maybe_append_choice(choices)
         return template
@@ -818,7 +821,8 @@ class CppGemmTemplate(CppTemplate):
         """
         NOTE Weight prep consists of 3 separate steps:
         1. Blocking the weight tensor into a 3D shape: [n//block_n, k, block_n]
-           This is only done for GEMM, and assumes the weight tensor is constant.
+           This is always done for GEMM, and assumes the weight tensor is constant.
+           For BMM, we block non-contiguous weight tensors, since they would be reshaped anyway.
         2. Padding the weight tensor along the n-dimension to be a multiple of block_n.
            This allows a more efficient microkernel implementation.
         3. Packing the weight tensor into a VNNI-friendly shape. For constant GEMM, 
@@ -833,10 +837,8 @@ class CppGemmTemplate(CppTemplate):
         For example, the CppBmmTemplate overrides get_padded_size, block_weight_irnode, and 
         pack_vnni_weight_irnode in order to accommodate an additional dimension for the batch size.
         """
-        should_block_weight = (
-            cls == CppGemmTemplate or micro_gemm.get_b_layout() != LayoutType.NORMAL
-        )
         W = inputs[1]
+        should_block_weight = cls.check_if_block_weight(W, micro_gemm)
         new_inputs = list(inputs)
         if isinstance(W, ir.IRNode):
             k, n = W.get_size()[-2:]
@@ -886,6 +888,10 @@ class CppGemmTemplate(CppTemplate):
                 BCompensate = torch.sum(W.to_dense().to(torch.float), dim=0)  # type: ignore[assignment]
             new_inputs.append(BCompensate)
         return new_inputs, layout
+
+    @classmethod
+    def check_if_block_weight(cls, W, micro_gemm):
+        return cls == CppGemmTemplate
 
     @staticmethod
     def block_weight_irnode(W, new_size, padding):

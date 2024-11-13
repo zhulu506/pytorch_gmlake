@@ -81,6 +81,7 @@ class CppBmmTemplate(CppGemmTemplate):
         alpha=1,
         has_bias=False,
         epilogue_creator: Optional[Callable[[ir.Buffer], ir.Pointwise]] = None,
+        should_block_weights = False,
         name="bmm",
     ):
         super().__init__(
@@ -92,16 +93,15 @@ class CppBmmTemplate(CppGemmTemplate):
             alpha=alpha,
             has_bias=has_bias,
             epilogue_creator=epilogue_creator,
+            should_block_weights=should_block_weights,
             name=name,
         )
-        # Value may be changed after micro_gemm is instantiated if using VNNI layout
-        self.should_block_weights = False
         self.b_index = sympy.Symbol("s_b_index", integer=True, nonnegative=True)
 
     @staticmethod
-    def get_padded_size(n, block_n, k, block_weight):
+    def get_padded_size(n, block_n, k, should_block_weight):
         padded_n = get_padded_n(n, block_n)
-        if block_weight:
+        if should_block_weight:
             new_size = [-1, padded_n // block_n, k, block_n]
         else:
             new_size = [-1, k, padded_n]
@@ -136,8 +136,15 @@ class CppBmmTemplate(CppGemmTemplate):
                 L.permute(L.view(W, vnni_view_size), [0, 1, 2, 4, 3]),
                 new_size,
             )
-            W = CppBmmTemplate.realize_permuted_irnode(W)
+        W = CppBmmTemplate.realize_permuted_irnode(W)
         return W
+
+    @classmethod
+    def check_if_block_weight(cls, W, micro_gemm):
+        return (
+            micro_gemm.get_b_layout() != LayoutType.NORMAL
+            or not W.layout.is_contiguous() if isinstance(W, ir.IRNode) else not W.is_contiguous()
+        )
 
     def get_gemm_function_call(
         self,
@@ -190,8 +197,6 @@ class CppBmmTemplate(CppGemmTemplate):
             epilogue_nodes=epilogue_nodes,
             **kwargs,
         )
-        if options["micro_gemm"].get_b_layout() != LayoutType.NORMAL:
-            self.should_block_weights = True
 
         BX, BW, BY = options["X"], options["W"], options["Y"]
         options["BX"], options["BW"], options["BY"] = BX, BW, BY
