@@ -440,7 +440,7 @@ def _should_pad_bench(
         ):
             return True
 
-        scheduling_factory = get_scheduling_for_device(mat1.device)
+        scheduling_factory = get_scheduling_for_device(mat1.device.type)
         if scheduling_factory is None or not isinstance(
             scheduling_factory(None),
             (TritonScheduling, CUDACombinedScheduling),
