@@ -21,7 +21,7 @@ import typing
 import warnings
 import weakref
 from pathlib import Path
-from types import CodeType, FrameType, FunctionType, ModuleType
+from types import CodeType, FunctionType, ModuleType
 from typing import Any, Callable, Dict, List, Optional, Set, TypeVar, Union
 from typing_extensions import ParamSpec
 from weakref import ReferenceType
@@ -139,7 +139,7 @@ except ModuleNotFoundError:
 if typing.TYPE_CHECKING:
     from .backends.registry import CompilerFn
     from .repro.after_dynamo import WrapBackendDebug
-    from .types import BytecodeHook, CacheEntry
+    from .types import BytecodeHook, CacheEntry, DynamoFrameType
     from .variables.builder import FrameStateSizeEntry
 
 
@@ -258,7 +258,7 @@ def preserve_global_state(fn: Callable[_P, _T]) -> Callable[_P, _T]:
 
 
 @TorchPatcher.suppress_torch_distributed_warnings
-def has_tensor_in_frame(frame: FrameType) -> bool:
+def has_tensor_in_frame(frame: DynamoFrameType) -> bool:
     """Check if the frame has torch.* related bits"""
     # Check if the function was decorated using torch._dynamo.optimize
     if frame.f_code in always_optimize_code_objects:
@@ -339,7 +339,7 @@ def has_tensor_in_frame(frame: FrameType) -> bool:
 def exception_handler(
     e: Exception,
     code: CodeType,
-    frame: Optional[FrameType] = None,
+    frame: Optional[DynamoFrameType] = None,
     export: bool = False,
 ) -> None:
     record_filename = None
@@ -451,7 +451,7 @@ class ConvertFrameAssert:
 
     def __call__(
         self,
-        frame: FrameType,
+        frame: DynamoFrameType,
         cache_entry: Optional[CacheEntry],
         hooks: Hooks,
         frame_state: Dict[str, Union[int, FrameStateSizeEntry]],
@@ -610,7 +610,7 @@ def _compile(
     hooks: Hooks,
     cache_entry: Optional[CacheEntry],
     cache_size: CacheSizeRelevantForFrame,
-    frame: Optional[FrameType] = None,
+    frame: Optional[DynamoFrameType] = None,
     frame_state: Optional[Dict[str, Union[int, FrameStateSizeEntry]]] = None,
     *,
     compile_id: CompileId,
@@ -1213,7 +1213,7 @@ class ConvertFrame:
 
     def __call__(
         self,
-        frame: FrameType,
+        frame: DynamoFrameType,
         cache_entry: Optional[CacheEntry],
         hooks: Hooks,
         frame_state: Dict[str, Union[int, FrameStateSizeEntry]],
@@ -1358,7 +1358,7 @@ def first_real_inst_idx(code: CodeType) -> int:
 class ConvertFrameProtocol(typing.Protocol):
     def __call__(
         self,
-        frame: FrameType,
+        frame: DynamoFrameType,
         cache_entry: Optional[CacheEntry],
         hooks: Hooks,
         frame_state: Dict[str, Union[int, FrameStateSizeEntry]],
@@ -1376,7 +1376,7 @@ class CatchErrorsWrapper:
 
     def __call__(
         self,
-        frame: FrameType,
+        frame: DynamoFrameType,
         cache_entry: Optional[CacheEntry],
         frame_state: Dict[str, Union[int, FrameStateSizeEntry]],
     ) -> Optional[GuardedCode]:
