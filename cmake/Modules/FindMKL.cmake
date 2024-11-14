@@ -29,6 +29,9 @@ SET(MKL_CDFT_LIBRARIES)
 INCLUDE(CheckTypeSize)
 INCLUDE(CheckFunctionExists)
 
+# MKL from pip channel don't support soft link, we need to append version number.
+SET(SHARED_SO_VERSION_NUM "2")
+
 # Set default value of INTEL_COMPILER_DIR and INTEL_MKL_DIR
 IF (WIN32)
   IF(DEFINED ENV{MKLProductDir})
@@ -188,8 +191,6 @@ IF (EXISTS ${INTEL_OMP_DIR})
 ENDIF()
 
 MACRO(GET_MKL_LIB_NAMES LIBRARIES INTERFACE MKL64)
-  # MKL from pip channel don't support soft link, we need to append version number.
-  SET(SHARED_SO_VERSION_NUM "2")
   cmake_parse_arguments("" "" "THREAD" "" ${ARGN})
   SET(${LIBRARIES} mkl_${INTERFACE}${MKL64} mkl_core)
   IF(_THREAD)
@@ -211,7 +212,7 @@ MACRO(GET_MKL_LIB_NAMES LIBRARIES INTERFACE MKL64)
   ELSE()
     IF(UNIX)
       list(TRANSFORM ${LIBRARIES} PREPEND "lib")
-      list(TRANSFORM ${LIBRARIES} APPEND ".so.${SHARED_SO_VERSION_NUM}")
+      list(TRANSFORM ${LIBRARIES} APPEND ".so")
     ELSEIF(MSVC)
       list(TRANSFORM ${LIBRARIES} APPEND "_dll.lib")
     ELSE()
@@ -291,7 +292,8 @@ MACRO(CHECK_ALL_LIBRARIES LIBRARIES OPENMP_TYPE OPENMP_LIBRARY _name _list _flag
         SET(_found_tbb TRUE)
       ELSE()
         SET(lib_names ${_library})
-        FIND_LIBRARY(${_prefix}_${_library}_LIBRARY NAMES ${lib_names})
+        message("!!!!! lib_names: ${lib_names}.${SHARED_SO_VERSION_NUM}")
+        FIND_LIBRARY(${_prefix}_${_library}_LIBRARY NAMES ${lib_names} ${lib_names}.${SHARED_SO_VERSION_NUM})
       ENDIF()
       MARK_AS_ADVANCED(${_prefix}_${_library}_LIBRARY)
       IF(NOT (${_library} STREQUAL "tbb"))
