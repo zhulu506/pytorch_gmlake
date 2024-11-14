@@ -5188,6 +5188,11 @@ class ExternKernel(InputsKernel):
 
     def codegen_size_asserts(self, wrapper) -> None:  # type: ignore[no-untyped-def]
         if config.size_asserts and not V.graph.cpp_wrapper:
+            # if there is some symbol in size or stride, we couldn't generate asserts
+            if not isinstance(sympy_product(self.get_size()), int):
+                return
+            if not isinstance(sympy_product(self.get_stride()), int):
+                return
             # comparing strides for 0 size tensor is tricky. Ignore them for now.
             if sympy_product(self.get_size()) == 0:
                 return
