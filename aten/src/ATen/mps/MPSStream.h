@@ -45,6 +45,7 @@ enum class SyncType {
   COMMIT_AND_WAIT,    // flush and wait for command buffer execution to finish
   COMMIT_AND_CONTINUE,// commit and continue with a new underlying command buffer
   COMMIT_ADAPTIVE,    // commit adaptively based on available memory
+  COMMIT_AND_CONTINUE_ROOT, // commit and continue, but also wait for the root command buffer to finish
 };
 
 class TORCH_API MPSStream
@@ -100,6 +101,7 @@ private:
   void commit();
   void commitAndWait();
   void commitAndContinue();
+  void commitAndContinueRoot();
   void flush();
 };
 
