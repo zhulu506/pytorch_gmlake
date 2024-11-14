@@ -166,7 +166,7 @@ class GuardManagerWrapper:
         self.guard_fail_fn = None
         self.cache_entry = None
         self.extra_state = None
-        self.id_matched_objs = None
+        self.id_matched_objs = {}
         self.no_tensor_aliasing_sources = []
 
         self.print_no_tensor_aliasing_guard = True
@@ -1288,8 +1288,14 @@ class GuardBuilder(GuardBuilderBase):
 
     def TYPE_MATCH(self, guard: Guard) -> None:
         # ___check_type_id is same as `id(type(x)) == y`
+        val = self.get(guard.name)
         t = type(self.get(guard.name))
-        obj_id = self.id_ref(t)
+        if isinstance(val, torch.fx.GraphModule):
+            # For some reason, GraphModuleImpl deallocation causes segfaults.
+            # So, dont put invalidate function
+            obj_id = id(t)
+        else:
+            obj_id = self.id_ref(t)  # type: ignore[assignment]
         code = f"___check_type_id({self.arg_ref(guard)}, {obj_id})"
         self._set_guard_export_info(guard, [code])
 
@@ -2113,6 +2119,15 @@ class DeletedGuardFn:
     pass
 
 
+class DeletedGuardManagerWrapper(GuardManagerWrapper):
+    def __init__(self):
+        super().__init__()
+        self.root.add_always_false_guard(["always_false"])
+
+
+deleted_guard_manager = DeletedGuardManagerWrapper()
+
+
 # NB: Naively, you'd expect this to only be a function that produces
 # the callable that constitutes the guard.  However, there is some
 # delicate handling for invalidating this check function when the
@@ -2398,14 +2413,13 @@ class CheckFunctionManager:
         if (
             hasattr(self, "guard_manager")
             and self.guard_manager is not DeletedGuardFn
+            # not isinstance(self.guard_manager, DeletedGuardManagerWrapper)
             and (cache_entry := self.guard_manager.cache_entry) is not None
             and (extra_state := self.guard_manager.extra_state) is not None
         ):
             assert isinstance(cache_entry, CacheEntry)
             assert isinstance(extra_state, ExtraState)
-            extra_state.invalidate(cache_entry)
-            self.guard_manager.cache_entry = None
-            self.guard_manager.extra_state = None
+            extra_state.invalidate(cache_entry, deleted_guard_manager)
             self.guard_manager = DeletedGuardFn  # type: ignore[assignment]
 
     def id_ref(self, obj):
@@ -2416,6 +2430,7 @@ class CheckFunctionManager:
                 # function, which will delete the callbacks as well. Therefore,
                 # we are using a finalizer which is kept alive.
                 self._weakrefs[id(obj)] = weakref.ref(obj)
+                # weakref.finalize(obj, functools.partial(self.invalidate, obj_str=str(obj)))
                 weakref.finalize(obj, self.invalidate)
         except TypeError:
             pass  # cannot weakref bool object
@@ -2588,6 +2603,8 @@ def get_guard_fail_reason(
     f_locals: Dict[str, object],
     compile_id: CompileId,
 ) -> str:
+    if isinstance(guard_manager, DeletedGuardManagerWrapper):
+        return "Guard manager was invalidated"
     reason_str = get_guard_fail_reason_helper(guard_manager, f_locals, compile_id)
     guard_failures[orig_code_map[code]].append(reason_str)
 
