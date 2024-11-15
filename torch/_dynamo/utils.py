@@ -2807,9 +2807,15 @@ def build_checkpoint_variable(**options):
 
 
 def is_compile_supported(device_type: str) -> bool:
-    from torch._inductor.codegen.common import get_scheduling_for_device
+    from torch._inductor.codegen.common import (
+        get_scheduling_for_device,
+        init_backend_registration,
+    )
 
     from .eval_frame import is_dynamo_supported
+
+    # Ensure the scheduling backends are registered first.
+    init_backend_registration()
 
     return is_dynamo_supported() and get_scheduling_for_device(device_type) is not None
 
