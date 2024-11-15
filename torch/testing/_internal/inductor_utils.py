@@ -12,8 +12,7 @@ import torch._inductor.async_compile  # noqa: F401 required to warm up AsyncComp
 from torch._inductor.codecache import CppCodeCache
 from torch._inductor.utils import get_gpu_shared_memory, is_big_gpu
 from torch._inductor.utils import GPU_TYPES, get_gpu_type
-from torch._inductor.scheduler import get_scheduling_for_device
-from torch._inductor.codegen.common import init_backend_registration
+from torch._inductor.codegen.common import init_backend_registration, get_scheduling_for_device
 from torch.utils._triton import has_triton_package
 from torch.testing._internal.common_utils import (
     LazyVal,
