@@ -105,18 +105,6 @@ void fp16_gemv_trans(
     Half* y,
     const int incy);
 
-float fp16_dot_with_fp32_arith(
-    const Half* vec1,
-    const Half* vec2,
-    int64_t len);
-
-float fp16_dot_with_fp32_arith(
-  const Half* x,
-  const Half* a,
-  int64_t len) {
-  return fp16_dot_with_fp32_arith_stub.call_with_known_device_type<kCPU>(x, a, len);
-}
-
 void fp16_gemv_trans(
     const int m,
     const int n,
@@ -143,17 +131,6 @@ void bf16_gemv_trans(
     at::BFloat16* y,
     const int incy);
 
-float bf16_dot_with_fp32_arith(
-    const at::BFloat16* vec1,
-    const at::BFloat16* vec2,
-    int64_t len);
-
-float bf16_dot_with_fp32_arith(
-    const at::BFloat16* vec1,
-    const at::BFloat16* vec2,
-    int64_t len) {
-  return bf16_dot_with_fp32_arith_stub.call_with_known_device_type<kCPU>(vec1, vec2, len);
-}
 #endif // !defined(C10_MOBILE)
 
 #if defined(__aarch64__) && !defined(C10_MOBILE)
