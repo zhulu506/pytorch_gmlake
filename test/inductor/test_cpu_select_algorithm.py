@@ -1788,6 +1788,56 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
     @patches
     @torch.no_grad
     @unittest.skipIf(not TEST_MKL, "Test requires MKL")
+    @parametrize("bs", (1,))
+    @parametrize("Mdim", (192,))
+    @parametrize("Kdim", (196,))
+    @parametrize("Ndim", (84,))
+    @dtypes(torch.float, torch.bfloat16, torch.half)
+    def test_bmm_amp(self, dtype, bs, Mdim, Kdim, Ndim):
+        class M(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+
+            def forward(self, x, y):
+                return x @ y
+
+        counters.clear()
+        u = torch.randn(bs, Mdim, Kdim).to(dtype=dtype)
+        v = torch.randn(bs, Kdim, Ndim).to(dtype=dtype)
+        mod = M().to(dtype=dtype).eval()
+        with verify(dtype) as (atol, rtol), torch.amp.autocast('cpu'):
+            self.common(mod, (u, v), atol=atol, rtol=rtol)
+        self.assertEqual(counters["inductor"]["select_algorithm_autotune"], 1)
+
+    @inductor_config.patch({"freezing": True})
+    @patches
+    @torch.no_grad
+    @unittest.skipIf(not TEST_MKL, "Test requires MKL")
+    @parametrize("bs", (1,))
+    @parametrize("Mdim", (192,))
+    @parametrize("Kdim", (196,))
+    @parametrize("Ndim", (64, 65))
+    @dtypes(torch.float, torch.bfloat16, torch.half)
+    def test_bmm_freezing(self, dtype, bs, Mdim, Kdim, Ndim):
+        class M(torch.nn.Module):
+            def __init__(self, w):
+                super().__init__()
+                self.w = torch.nn.Parameter(w, requires_grad=False)
+
+            def forward(self, x):
+                return x @ self.w
+
+        counters.clear()
+        u = torch.randn(bs, Mdim, Kdim).to(dtype=dtype)
+        v = torch.randn(bs, Kdim, Ndim).to(dtype=dtype)
+        mod = M(v).to(dtype=dtype).eval()
+        with verify(dtype) as (atol, rtol):
+            self.common(mod, (u,), atol=atol, rtol=rtol)
+        self.assertEqual(counters["inductor"]["select_algorithm_autotune"], 1)
+
+    @patches
+    @torch.no_grad
+    @unittest.skipIf(not TEST_MKL, "Test requires MKL")
     @parametrize("Ndim", (64, 61))
     @parametrize(
         "order",

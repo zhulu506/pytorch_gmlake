@@ -11,7 +11,6 @@ from ..virtualized import V
 from .cpp_gemm_template import (
     CppGemmTemplate,
     GEMM_TEMPLATE,
-    get_padded_n,
     MICROKERNEL_DEF,
 )
 from .cpp_micro_gemm import LayoutType
@@ -100,16 +99,19 @@ class CppBmmTemplate(CppGemmTemplate):
 
     @staticmethod
     def get_padded_size(n, block_n, k, should_block_weight):
-        padded_n = get_padded_n(n, block_n)
         if should_block_weight:
-            new_size = [-1, padded_n // block_n, k, block_n]
+            new_size, padded_n = CppGemmTemplate.get_padded_size(n, block_n, k, should_block_weight)
+            new_size.insert(0, -1)
+            return new_size, padded_n
         else:
-            new_size = [-1, k, padded_n]
-        return new_size, padded_n
+            new_size = [-1, k, n]
+            return new_size, n
 
     @staticmethod
     def block_weight_irnode(W, new_size, padding):
         assert isinstance(W, ir.IRNode)
+        if W.get_name() in V.graph.constants:
+            return CppGemmTemplate.block_weight_irnode(W, new_size, padding)
         if not isinstance(W, ir.TensorBox):
             W = ir.TensorBox(W)
         permuted_size = list(new_size)
@@ -123,6 +125,8 @@ class CppBmmTemplate(CppGemmTemplate):
 
     @staticmethod
     def pack_vnni_weight_irnode(W, micro_gemm, new_size):
+        if isinstance(W, ir.Buffer) and W.get_name() in V.graph.constants:
+            return W
         # new_size = [-1, padded_n // block_n, k, block_n]
         k = new_size[-2]
         if not isinstance(W, ir.TensorBox):

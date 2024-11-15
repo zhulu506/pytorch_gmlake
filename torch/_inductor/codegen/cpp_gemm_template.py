@@ -617,7 +617,6 @@ class CppGemmTemplate(CppTemplate):
             # It shouldn't happen as viewing an mkldnn tensor, we can extend the
             # implementation if it does.
             assert not isinstance(new_inputs[1], ir.BaseView)
-        assert isinstance(new_inputs[1].layout, ir.FixedLayout)
         # Note that the layout of MKLDNN Tensor is with the wrong stride
         view_size = new_inputs[1].layout.size
         view_stride = new_inputs[1].layout.stride
@@ -811,10 +810,8 @@ class CppGemmTemplate(CppTemplate):
     @staticmethod
     def get_padded_size(n, block_n, k, should_block_weight):
         padded_n = get_padded_n(n, block_n)
-        if should_block_weight:
-            new_size = [padded_n // block_n, k, block_n]
-        else:
-            new_size = [k, padded_n]
+        # We assume that all GEMM weight tensors should be blocked and padded
+        new_size = [padded_n // block_n, k, block_n]
         return new_size, padded_n
 
     @classmethod
@@ -825,8 +822,9 @@ class CppGemmTemplate(CppTemplate):
            This is always done for GEMM, and assumes the weight tensor is constant.
            For BMM, we block non-contiguous weight tensors, since they would be reshaped anyway.
         2. Padding the weight tensor along the n-dimension to be a multiple of block_n.
-           This allows a more efficient microkernel implementation.
-        3. Packing the weight tensor into a VNNI-friendly shape. For constant GEMM,
+           This allows a more efficient microkernel implementation. For BMM, this is only done if
+           reshape would happen anyway, i.e. if the weight tensor is constant or is not contiguous.
+        3. Packing the weight tensor into a VNNI-friendly shape. For constant input,
            this is done at the same time as the weight blocking.
         Subclasses can override the functions for each of the cases as necessary:
             - get_padded_size
@@ -911,8 +909,9 @@ class CppGemmTemplate(CppTemplate):
     @staticmethod
     def maybe_pad_weight(W, padding):
         if isinstance(W, ir.IRNode):
-            W = L.constant_pad_nd(W, (0, padding))
-            W = CppGemmTemplate.realize_permuted_irnode(W)
+            if W.get_name() not in V.graph.constants:
+                W = L.constant_pad_nd(W, (0, padding))
+                W = CppGemmTemplate.realize_permuted_irnode(W)
         else:
             if padding > 0:
                 W = torch.nn.functional.pad(W, (0, padding))
