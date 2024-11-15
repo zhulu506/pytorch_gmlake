@@ -9,8 +9,11 @@ from sympy.logic.boolalg import BooleanAtom
 
 import torch
 import torch.fx as fx
+from torch._dynamo.exc import TensorifyScalarRestartAnalysis
+from torch._dynamo.symbolic_convert import TensorifyState
 from torch._prims_common import get_computation_dtype
 from torch._subclasses import fake_tensor  # noqa: TCH001
+from torch._subclasses.fake_tensor import FakeTensor
 from torch._utils_internal import justknobs_check
 from torch.fx._utils import lazy_format_graph_code
 from torch.fx.experimental.symbolic_shapes import guard_scalar, ShapeEnv  # noqa: TCH001
@@ -109,6 +112,8 @@ def tensorify_python_scalars(
     tracer = fx.proxy.GraphAppendingTracer(graph)
     expr_to_sym_proxy: dict[sympy.Expr, MetaProxy] = {}
     expr_to_tensor_proxy: dict[sympy.Expr, MetaProxy] = {}
+    placeholder_to_symfloat_name: dict[fx.Node, str] = {}
+    should_restart = False
 
     first_non_placeholder = None
     placeholders = set()
@@ -198,6 +203,10 @@ def tensorify_python_scalars(
                 expr_to_sym_proxy[s] = MetaProxy(
                     node, tracer=tracer, fake_mode=fake_mode
                 )
+                # We use _expr instead of expr b/c we want the symbol not the replacement
+                placeholder_to_symfloat_name[node.args[0]] = node.meta[
+                    "val"
+                ].node._expr.name
 
             elif (sym_expr := _get_sym_val(node)) is not None:
                 if sym_expr not in expr_to_sym_proxy and not isinstance(
@@ -206,6 +215,23 @@ def tensorify_python_scalars(
                     expr_to_sym_proxy[sym_expr] = MetaProxy(
                         node, tracer=tracer, fake_mode=fake_mode
                     )
+
+            # Specialize all dimensions that contain symfloats. Here's
+            # an example test that requires this:
+            # PYTORCH_OPINFO_SAMPLE_INPUT_INDEX=4 tlp python test/inductor/test_torchinductor_opinfo.py TestInductorOpInfoCUDA.test_comprehensive_nn_functional_interpolate_bicubic_cuda_float32 # noqa: B950
+            val = node.meta.get("val")
+            if isinstance(val, FakeTensor):
+                for dim in val.shape:
+                    if isinstance(
+                        dim,
+                        (torch.SymFloat, torch.SymInt, torch.SymBool),
+                    ):
+                        for s in dim.node.expr.free_symbols:
+                            if symbol_is_type(
+                                s, SymT.FLOAT
+                            ) and not TensorifyState.should_specialize(s):
+                                TensorifyState.specialize(str(s))
+                                should_restart = True
 
             # Look for functions to convert
             if node.op == "call_function" and node.target in SUPPORTED_OPS:
@@ -280,6 +306,48 @@ def tensorify_python_scalars(
 
                     node.replace_all_uses_with(guard_scalar(val))
                     graph.erase_node(node)
+
+    # There are sometimes when we actually didn't set any replacements but still
+    # have specializations. For these cases we scan through placeholders and specialize
+    # using node meta val. Here's an example graph where you have no replacements but
+    # still want to specialize and get rid of zf0 before inductor:
+    #
+    # def forward(self, L_tensor_: "f16[2, 3, 4][12, 4, 1]cuda:0", L_scale_factor_: "f64[][]cpu"):
+    #     l_tensor_ = L_tensor_
+    #     l_scale_factor_ = L_scale_factor_
+    #     item: "Sym(zf0)" = l_scale_factor_.item();  l_scale_factor_ = None
+    #     interpolate: "f16[2, 3, TruncToInt(4.0*zf0)][3*TruncToInt(4.0*zf0), TruncToInt(4.0*zf0), 1]cuda:0" = torch.nn.functional.interpolate(l_tensor_, size = None, scale_factor = item, mode = 'nearest-exact', align_corners = None, recompute_scale_factor = True);  l_tensor_ = item = None # noqa: B950
+    #     return (interpolate,)
+    for i, node in enumerate(graph.nodes):
+        if node.op == "placeholder":
+            name = placeholder_to_symfloat_name.get(node)
+            if len(node.users) == 0 and name is not None:
+                # At this point we've lost the back pointer to
+                # what source this placeholder points to. Instead,
+                # we will rely on the symfloat name to specialize when we
+                # restart analysis.
+                TensorifyState.specialize(name)
+                should_restart = True
+        else:
+            break
+
+    # Sometimes by the time we get to tensorify, there have already been
+    # specializations, eg. in python_arg_parser.h. In these cases,
+    # placeholder nodes no longer have a reference to their original
+    # symfloat and thus we need to deduce specializations have happend
+    # via shape_env.replacements. NB: there's an important invariant here
+    # that symfloats keep consistent names across restarts.
+    for k, v in shape_env.replacements.items():
+        if symbol_is_type(k, SymT.FLOAT) and isinstance(v, sympy.core.numbers.Float):
+            name = str(k)
+            if not TensorifyState.should_specialize(name):
+                TensorifyState.specialize(name)
+                should_restart = True
+
+    if should_restart:
+        # Sledgehammer time. Restart dynamo analysis, keeping track of which input sources
+        # are no longer needed and should be specialized.
+        raise TensorifyScalarRestartAnalysis
 
     graph_code_log.debug(
         "%s", lazy_format_graph_code("tensorify_python_scalars", gm, colored=True)
