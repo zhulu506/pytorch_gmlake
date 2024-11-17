@@ -5189,9 +5189,9 @@ class ExternKernel(InputsKernel):
     def codegen_size_asserts(self, wrapper) -> None:  # type: ignore[no-untyped-def]
         if config.size_asserts and not V.graph.cpp_wrapper:
             # if there is some symbol in size or stride, we couldn't generate asserts
-            if not isinstance(sympy_product(self.get_size()), int):
+            if not isinstance(self.get_size(), (int, sympy.Integer)):
                 return
-            if not isinstance(sympy_product(self.get_stride()), int):
+            if not isinstance(self.get_stride(), (int, sympy.Integer)):
                 return
             # comparing strides for 0 size tensor is tricky. Ignore them for now.
             if sympy_product(self.get_size()) == 0:
@@ -6460,6 +6460,7 @@ class FallbackKernel(ExternKernelAlloc):
                 unflatten_args,
                 unbacked_bindings=unbacked_bindings,
             )
+            packed.outputs = [packed]
             return packed
         else:
             assert device, "Not sure where to find device info"
