@@ -5189,9 +5189,11 @@ class ExternKernel(InputsKernel):
     def codegen_size_asserts(self, wrapper) -> None:  # type: ignore[no-untyped-def]
         if config.size_asserts and not V.graph.cpp_wrapper:
             # if there is some symbol in size or stride, we couldn't generate asserts
-            if not isinstance(self.get_size(), (int, sympy.Integer)):
-                return
-            if not isinstance(self.get_stride(), (int, sympy.Integer)):
+            from torch.fx.experimental.symbolic_shapes import has_free_unbacked_symbols
+
+            if has_free_unbacked_symbols(self.get_size()) or has_free_unbacked_symbols(
+                self.get_stride()
+            ):
                 return
             # comparing strides for 0 size tensor is tricky. Ignore them for now.
             if sympy_product(self.get_size()) == 0:
