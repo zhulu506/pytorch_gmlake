@@ -1717,7 +1717,9 @@ class CppWrapperCpu(PythonWrapperCodegen):
         def extract_output_name(out):
             if out is None:
                 return None
-            elif isinstance(out, (ir.MultiOutput, ir._CollectiveKernel, ir.FallbackKernel)):
+            elif isinstance(
+                out, (ir.MultiOutput, ir._CollectiveKernel, ir.FallbackKernel)
+            ):
                 return out.get_name()
             elif isinstance(out, ir.MutationOutput):
                 mutated_buf_names = out.get_mutation_names()
