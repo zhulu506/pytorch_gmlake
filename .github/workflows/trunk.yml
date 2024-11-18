@@ -102,7 +102,7 @@ jobs:
       build-environment: linux-focal-cuda12.6-py3.10-gcc9-sm86
       docker-image: ${{ needs.linux-focal-cuda12_6-py3_10-gcc9-sm86-build.outputs.docker-image }}
       test-matrix: ${{ needs.linux-focal-cuda12_6-py3_10-gcc9-sm86-build.outputs.test-matrix }}
-  
+
   libtorch-linux-focal-cuda12_1-py3_7-gcc9-debug-build:
     name: libtorch-linux-focal-cuda12.1-py3.7-gcc9-debug
     uses: ./.github/workflows/_linux-build.yml
@@ -189,7 +189,7 @@ jobs:
         { include: [
           { config: "default", shard: 1, num_shards: 1 },
         ]}
-      
+
   macos-py3-arm64-build:
     if: github.repository_owner == 'pytorch'
     name: macos-py3-arm64

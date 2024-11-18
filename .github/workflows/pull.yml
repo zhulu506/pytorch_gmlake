@@ -455,7 +455,7 @@ jobs:
           { config: "default", shard: 1, num_shards: 1, runner: "${{ needs.get-label-type.outputs.label-type }}linux.4xlarge.nvidia.gpu" },
         ]}
     secrets: inherit
-  
+
   linux-focal-cuda12_6-py3_10-gcc9-bazel-test:
     name: linux-focal-cuda12.6-py3.10-gcc9-bazel-test
     uses: ./.github/workflows/_bazel-build-test.yml
