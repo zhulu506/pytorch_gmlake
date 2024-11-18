@@ -151,7 +151,7 @@ memory_planning = os.environ.get("TORCHINDUCTOR_MEMORY_PLANNING", "0") == "1"
 # - "combined": a single pool for both intermediates and outputs
 memory_pool: Literal["none", "intermediates", "outputs", "combined"] = os.environ.get(
     "TORCHINDUCTOR_MEMORY_POOL", "intermediates"
-)
+)  # type: ignore[assignment]
 
 # codegen benchmark harness
 benchmark_harness = True
