@@ -64,10 +64,14 @@ def has_triton_backend_available(device_type: str) -> bool:
     except RuntimeError:
         return False
 
+# We have a CUDA device and a compatible Inductor backend.
 HAS_CUDA = torch.cuda.is_available() and has_inductor_available("cuda")
+# We have a CUDA device and the CUDA Triton backend for Inductor is available.
 HAS_CUDA_TRITON = HAS_CUDA and has_triton_backend_available("cuda")
 
+# We have an XPU device and a compatible Inductor backend.
 HAS_XPU = torch.xpu.is_available() and has_inductor_available("xpu")
+# We have an XPU device and the XPU Triton backend for Inductor is available.
 HAS_XPU_TRITON = HAS_XPU and has_triton_backend_available("xpu")
 
 HAS_GPU = HAS_CUDA or HAS_XPU
