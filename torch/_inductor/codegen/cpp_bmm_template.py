@@ -24,7 +24,7 @@ GEMM_SINGLE_THREAD_MM_STUB = r"""
     outputs={"Y": Y},
     aliases=aliases,
     function_name="single_thread_mm",
-    custom_sizevars=[b_index],
+    extra_sizevars=[b_index],
     placeholder="<SINGLE_THREAD_DEF_MM_FOR_BMM>")}}"""
 
 GEMM_THREADED_MM_STUB = r"""
@@ -33,7 +33,7 @@ GEMM_THREADED_MM_STUB = r"""
     outputs={"Y": Y},
     aliases=aliases,
     function_name="threaded_mm",
-    custom_sizevars=[b_index],
+    extra_sizevars=[b_index],
     placeholder="<THREADED_MM_DEF_FOR_BMM>")}}"""
 
 BMM_WRAPPER = r"""
@@ -83,6 +83,12 @@ class CppBmmTemplate(CppGemmTemplate):
         should_block_weights: bool = False,
         name="bmm",
     ):
+        """
+        In order to simplify the implementation and increase code reuse, the BMM template implements
+        two versions of the GEMM kernel: a single-threaded version and a multi-threaded version. 
+        GEMM kernels are called in a loop over the batch dimension, with single-threaded GEMM calls
+        for all but the last (B % num_threads), which are handled by the multi-threaded GEMM kernel.
+        """
         super().__init__(
             input_nodes,
             layout,
@@ -100,7 +106,9 @@ class CppBmmTemplate(CppGemmTemplate):
     @staticmethod
     def get_padded_size(n, block_n, k, should_block_weight):
         if should_block_weight:
+            # Tensor is constant or not contiguous, so we will pad and block
             new_size, padded_n = CppGemmTemplate.get_padded_size(n, block_n, k, should_block_weight)
+            # Add the new batch dimension
             new_size.insert(0, -1)
             return new_size, padded_n
         else:
@@ -108,10 +116,10 @@ class CppBmmTemplate(CppGemmTemplate):
             return new_size, n
 
     @staticmethod
-    def block_weight_irnode(W, new_size, padding):
+    def _block_weight_irnode(W, new_size, padding):
         assert isinstance(W, ir.IRNode)
         if W.get_name() in V.graph.constants:
-            return CppGemmTemplate.block_weight_irnode(W, new_size, padding)
+            return CppGemmTemplate._block_weight_irnode(W, new_size, padding)
         if not isinstance(W, ir.TensorBox):
             W = ir.TensorBox(W)
         permuted_size = list(new_size)
@@ -124,9 +132,11 @@ class CppBmmTemplate(CppGemmTemplate):
         return blocked_w
 
     @staticmethod
-    def pack_vnni_weight_irnode(W, micro_gemm, new_size):
+    def _pack_vnni_weight_irnode(W, micro_gemm, new_size):
         if isinstance(W, ir.Buffer) and W.get_name() in V.graph.constants:
+            # If input is constant, packing is done with a constant tensor, so no change is needed
             return W
+        # If not, the input needs to be packed here
         # new_size = [-1, padded_n // block_n, k, block_n]
         k = new_size[-2]
         if not isinstance(W, ir.TensorBox):
@@ -140,13 +150,14 @@ class CppBmmTemplate(CppGemmTemplate):
                 L.permute(L.view(W, vnni_view_size), [0, 1, 2, 4, 3]),
                 new_size,
             )
-        W = CppBmmTemplate.realize_permuted_irnode(W)
+        W = ir.ExternKernel.realize_input(W)
+        W = ir.ExternKernel.require_contiguous(W)
         return W
 
-    @classmethod
-    def check_if_block_weight(cls, W, micro_gemm):
+    @staticmethod
+    def check_if_block_weight(W, micro_gemm):
         return micro_gemm.get_b_layout() != LayoutType.NORMAL or (
-            not W.get_layout().is_contiguous()
+            (not W.get_layout().is_contiguous() or W.get_name() in V.graph.constants)
             if isinstance(W, ir.IRNode)
             else not W.is_contiguous()
         )
@@ -167,11 +178,11 @@ class CppBmmTemplate(CppGemmTemplate):
         """
 
         def hook():
-            call_args, buffer_names, _, _ = kernel.args.python_argdefs()
-            for i, buf in enumerate(buffer_names):
+            arg_defs, call_args, _, _ = kernel.args.python_argdefs()
+            for i, buf in enumerate(call_args):
                 if buf == self.b_index:
-                    call_args[i] = b_index
-            call = f"{function_name}({', '.join(call_args)});"
+                    arg_defs[i] = b_index
+            call = f"{function_name}({', '.join(arg_defs)});"
             return call
 
         assert placeholder not in kernel.render_hooks
@@ -181,11 +192,9 @@ class CppBmmTemplate(CppGemmTemplate):
     def get_default_reindexers(self, epilogue_nodes):
         def reindexer(args):
             # if epilogue nodes exist, they have 3D ranges but args are 2D, so add 0 index
-            if len(epilogue_nodes) == 0:
-                return args
             return [self.b_index] + args
 
-        return [reindexer]
+        return [reindexer] * len(epilogue_nodes)
 
     def get_options(
         self,

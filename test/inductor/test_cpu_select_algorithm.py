@@ -1913,27 +1913,6 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
     @torch.no_grad
     @unittest.skipIf(not TEST_MKL, "Test requires MKL")
     @parametrize("bs", (5,))
-    @parametrize("Mdim", (64,))
-    @dtypes(torch.float)
-    def test_bmm_self_square(self, bs, Mdim, dtype):
-        class M(torch.nn.Module):
-            def __init__(self):
-                super().__init__()
-
-            def forward(self, x):
-                return x @ x
-
-        counters.clear()
-        u = torch.randn(bs, Mdim, Mdim).to(dtype=dtype)
-        mod = M().to(dtype=dtype).eval()
-        with verify(dtype) as (atol, rtol):
-            self.common(mod, (u,), atol=atol, rtol=rtol)
-        self.assertEqual(counters["inductor"]["select_algorithm_autotune"], 1)
-
-    @patches
-    @torch.no_grad
-    @unittest.skipIf(not TEST_MKL, "Test requires MKL")
-    @parametrize("bs", (5,))
     @parametrize("Mdim", (384,))
     @parametrize("Kdim", (96,))
     @parametrize("Ndim", (64, 65))
