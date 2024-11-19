@@ -134,3 +134,6 @@
 [submodule "third_party/x86-simd-sort"]
 	path = third_party/x86-simd-sort
 	url = https://github.com/intel/x86-simd-sort.git
+[submodule "third_party/kleidiai"]
+	path = third_party/kleidiai
+	url = https://git.gitlab.arm.com/kleidi/kleidiai.git
