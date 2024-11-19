@@ -8,11 +8,7 @@ import sympy
 from .. import ir, lowering as L
 from ..select_algorithm import PartialRender
 from ..virtualized import V
-from .cpp_gemm_template import (
-    CppGemmTemplate,
-    GEMM_TEMPLATE,
-    MICROKERNEL_DEF,
-)
+from .cpp_gemm_template import CppGemmTemplate, GEMM_TEMPLATE, MICROKERNEL_DEF
 from .cpp_micro_gemm import LayoutType
 from .cpp_template_kernel import CppTemplateKernel
 from .cpp_utils import DTYPE_TO_CPP, GemmBlocking
@@ -85,7 +81,7 @@ class CppBmmTemplate(CppGemmTemplate):
     ):
         """
         In order to simplify the implementation and increase code reuse, the BMM template implements
-        two versions of the GEMM kernel: a single-threaded version and a multi-threaded version. 
+        two versions of the GEMM kernel: a single-threaded version and a multi-threaded version.
         GEMM kernels are called in a loop over the batch dimension, with single-threaded GEMM calls
         for all but the last (B % num_threads), which are handled by the multi-threaded GEMM kernel.
         """
@@ -107,7 +103,9 @@ class CppBmmTemplate(CppGemmTemplate):
     def get_padded_size(n, block_n, k, should_block_weight):
         if should_block_weight:
             # Tensor is constant or not contiguous, so we will pad and block
-            new_size, padded_n = CppGemmTemplate.get_padded_size(n, block_n, k, should_block_weight)
+            new_size, padded_n = CppGemmTemplate.get_padded_size(
+                n, block_n, k, should_block_weight
+            )
             # Add the new batch dimension
             new_size.insert(0, -1)
             return new_size, padded_n

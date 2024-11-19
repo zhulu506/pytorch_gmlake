@@ -823,6 +823,8 @@ class CppGemmTemplate(CppTemplate):
         1. Blocking the weight tensor into a 3D shape: [n//block_n, k, block_n]
            This is always done if the weight tensor is contant, i.e. for all GEMM and some BMM.
            For BMM, we also block non-contiguous weight tensors, since they would be reshaped anyway.
+           This assumes that blocked, contiguous weights will be more efficient for the GEMM kernel,
+           and is worth the overhead of reshape and blocking.
 
            This blocking includes additional padding, when n is not a multiple of block_n.
            This padding allows a more efficient microkernel implementation. For BMM, this is only done
@@ -830,6 +832,9 @@ class CppGemmTemplate(CppTemplate):
            or is using AMX VNNI layout.
         2. Packing the weight tensor into a VNNI-friendly shape. For constant input,
            this is done at the same time as the weight blocking.
+
+        At compile time, the constant weight tensors are blocked and packed. For non-constant tensors (BMM)
+        which will be blocked (non-contiguous or VNNI-layout tensors), the weight tensor is blocked and packed at runtime.
 
         Subclasses can override the functions for each of the cases as necessary:
             - get_padded_size

@@ -1805,7 +1805,7 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
         u = torch.randn(bs, Mdim, Kdim).to(dtype=dtype)
         v = torch.randn(bs, Kdim, Ndim).to(dtype=dtype)
         mod = M().to(dtype=dtype).eval()
-        with verify(dtype) as (atol, rtol), torch.amp.autocast('cpu'):
+        with verify(dtype) as (atol, rtol), torch.amp.autocast("cpu"):
             self.common(mod, (u, v), atol=atol, rtol=rtol)
         self.assertEqual(counters["inductor"]["select_algorithm_autotune"], 1)
 
