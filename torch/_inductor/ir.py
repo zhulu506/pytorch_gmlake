@@ -6453,7 +6453,9 @@ class FallbackKernel(ExternKernelAlloc):
                 unflatten_args,
                 unbacked_bindings=unbacked_bindings,
             )
-        elif not isinstance(example_output, (tuple, list)):
+        # TODO: fix redundant case for dynamic_output_shape later.
+        # test case: test/inductor/test_torchinductor.py CpuTests.test_nonzero_unbacked_refinement_cpu
+        elif not isinstance(example_output, (tuple, list)) and torch.Tag.dynamic_output_shape not in kernel.tags:
             packed = cls(
                 cls.tensor_to_layout(example_output),
                 kernel,

@@ -1496,7 +1496,6 @@ class GraphLowering(torch.fx.Interpreter):
                         # the right strides at the tensor definition.
                         if n.meta["val"]._is_view() or (
                             isinstance(result, TensorBox)
-                            and isinstance(result.data, StorageBox)
                             and isinstance(result.data, ir.BaseView)
                         ):
                             result = ir.ExternKernel.require_stride_order(
