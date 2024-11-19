@@ -354,7 +354,7 @@ max_autotune_conv_backends = os.environ.get(
 # EXHAUSTIVE  - maximize performance
 max_autotune_gemm_search_space: Literal["DEFAULT", "EXHAUSTIVE"] = os.environ.get(
     "TORCHINDUCTOR_MAX_AUTOTUNE_GEMM_SEARCH_SPACE", "DEFAULT"
-).upper()
+).upper()  # type: ignore[assignment]
 
 # Whether we fall back to ATen or hard error when no matches are found during autotuning
 autotune_fallback_to_aten = (
@@ -846,10 +846,12 @@ class cpp:
 
     simdlen: Optional[int] = None
     min_chunk_size = int(os.environ.get("TORCHINDUCTOR_CPP_MIN_CHUNK_SIZE", "4096"))
+
     cxx: Tuple[None, Literal["g++-12", "g++-11", "g++-10", "clang++", "g++.par"]] = (
         None,  # download gcc12 from conda-forge if conda is installed
         os.environ.get("CXX", "clang++" if sys.platform == "darwin" else "g++"),
-    )
+    )  # type: ignore[assignment]
+
     # Allow kernel performance profiling via PyTorch profiler
     enable_kernel_profile = (
         os.environ.get("TORCHINDUCTOR_CPP_ENABLE_KERNEL_PROFILE", "0") == "1"
@@ -1042,7 +1044,7 @@ class triton:
     # 3: enable, force using non-persistent reduction (for debugging)
     multi_kernel: Literal["0", "1", "2", "3", "False", "True"] = int(
         os.environ.get("TORCHINDUCTOR_MULTI_KERNEL", "0")
-    )
+    )  # type: ignore[assignment]
 
     # hint to Triton when arguments are divisible by 16
     divisible_by_16 = True
@@ -1097,7 +1099,7 @@ class aot_inductor:
     # 3: enable printing kernel names only (useful for pinpointing troublesome kernels)
     debug_intermediate_value_printer: Literal["0", "1", "2", "3"] = os.environ.get(
         "AOT_INDUCTOR_DEBUG_INTERMEDIATE_VALUE_PRINTER", "0"
-    )
+    )  # type: ignore[assignment]
 
     # filtered nodes to be printed for debug values. Specify this option when debug_intermediate_value_printer is set to 2
     filtered_kernel_names = os.environ.get(

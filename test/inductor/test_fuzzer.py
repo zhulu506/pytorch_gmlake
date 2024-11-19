@@ -44,10 +44,13 @@ class TestConfigFuzzer(TestCase):
     def test_config_fuzzer_bisector(self):
         key_1 = {"e_bool": False, "e_optional": None}
 
+        class MyException(Exception):
+            pass
+
         def create_key_1():
             def myfn():
-                if fake_config.e_bool == False and fake_config.e_optional == None:
-                    raise Exception("hi")
+                if not fake_config.e_bool and fake_config.e_optional is None:
+                    raise MyException("hi")
                 return True
 
             return myfn

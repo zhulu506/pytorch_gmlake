@@ -157,7 +157,7 @@ class SamplingMethod(Enum):
             key_type, value_type = getattr(
                 type_hint,
                 "__args__",
-                map(type, list(default.items())[0])
+                map(type, next(iter(default.items())))
                 if len(default)
                 else (type(None), type(None)),
             )
@@ -178,8 +178,8 @@ class SamplingMethod(Enum):
             # do whatever is not the type of default
             try:
                 assert len(type_hint.__args__) > 1
-            except AttributeError:
-                raise ValueError("Union type with no args")
+            except AttributeError as err:
+                raise ValueError("Union type with no args") from err
             if random_sample:
                 new_type = random.choice(type_hint.__args__)
             else:
@@ -188,7 +188,7 @@ class SamplingMethod(Enum):
                 )
             try:
                 new_default = new_type()
-            except:
+            except Exception:  # noqa: E722
                 # if default constructor doesn't work, try None
                 new_default = None
 
@@ -203,7 +203,7 @@ class SamplingMethod(Enum):
             )
             zipped = zip(args, default)
             return tuple(
-                map(
+                map(  # noqa: C417
                     lambda x: SamplingMethod._generate_value_for_type(
                         random_sample, x[0], x[1]
                     ),
@@ -218,13 +218,13 @@ class SamplingMethod(Enum):
                     return random.choice(
                         [t for t in type_hint.__args__ if t != default]
                     )
-            except AttributeError:
-                raise ValueError("Literal type with no args")
+            except AttributeError as err:
+                raise ValueError("Literal type with no args") from err
         elif is_optional_type(type_hint):
             try:
                 elem_type = type_hint.__args__[0]
-            except AttributeError:
-                raise ValueError("Optional type with no args")
+            except AttributeError as err:
+                raise ValueError("Optional type with no args") from err
             if random_sample:
                 return random.choice(
                     [
@@ -249,8 +249,8 @@ class SamplingMethod(Enum):
                     list(type_hint.__args__)[:-1],
                     list(type_hint.__args__)[-1],
                 )
-            except AttributeError:
-                raise ValueError("Callable type with no args")
+            except AttributeError as err:
+                raise ValueError("Callable type with no args") from err
 
             @wraps(lambda *args, **kwargs: None)
             def dummy_function(*args, **kwargs):  # type: ignore[no-untyped-def]
@@ -267,13 +267,13 @@ class SamplingMethod(Enum):
             raise ValueError(f"Unable to process type {type_hint}. PRs welcome :)")
 
     @staticmethod
-    def dispatch(sm: "SamplingMethod") -> Callable[[Type[Any]], Any]:
+    def dispatch(sm: "SamplingMethod") -> Callable[[Type[Any], Any], Any]:
         if sm == SamplingMethod.RANDOM:
             return partial(SamplingMethod._generate_value_for_type, True)
         elif sm == SamplingMethod.TOGGLE:
             return partial(SamplingMethod._generate_value_for_type, False)
         else:
-            raise Exception(f"malformed sampling method: {sm}")
+            raise ValueError(f"malformed sampling method: {sm}")
 
 
 class Default:
@@ -285,13 +285,17 @@ DEFAULT = Default()
 ComboType = Tuple[str, ...]
 ResultType = Dict[ComboType, Status]
 ConfigType = Dict[str, Any]
+FactoryOutputType = Callable[[], bool]
+FactoryType = Callable[[], FactoryOutputType]
 
 
 class ConfigFuzzer:
+    sample: Callable[[Type[Any], Any], Any]
+
     def __init__(
         self,
         config_module: ConfigModule,
-        test_model_fn_factory: Callable[[], Callable[[], bool]],
+        test_model_fn_factory: FactoryType,
         seed: int,
         default: Optional[ConfigType] = None,
         sm: SamplingMethod = SamplingMethod.TOGGLE,
@@ -348,7 +352,10 @@ class ConfigFuzzer:
             self.default = default
 
     def __repr__(self) -> str:
-        return f"ConfigFuzzer(config_module={self.config_module}, test_model_fn_factor={self.test_model_fn_factory}, seed={self.seed}, default={self.default})"
+        return (
+            f"ConfigFuzzer(config_module={self.config_module}, "
+            f"test_model_fn_factor={self.test_model_fn_factory}, seed={self.seed}, default={self.default})"
+        )
 
     def _set_config(self, field_name: str, value: Any) -> None:
         """Set a config value in the module."""
@@ -365,7 +372,7 @@ class ConfigFuzzer:
         combo = tuple(sorted(combo))
         results[combo] = status
 
-    def _lookup_status(self, results: ResultType, combo: ComboType) -> Status:
+    def _lookup_status(self, results: ResultType, combo: ComboType) -> Optional[Status]:
         combo = tuple(sorted(combo))
         return results[combo] if combo in results else None
 
@@ -377,7 +384,7 @@ class ConfigFuzzer:
         }
         return ret
 
-    def _combo_run_common(self, results: ResultType, combo: ResultType) -> None:
+    def _combo_run_common(self, results: ResultType, combo: ComboType) -> None:
         print(combo)
         if self._lookup_status(results, combo):
             # we already processed this config
@@ -399,15 +406,16 @@ class ConfigFuzzer:
             self._set_status(results, combo, Status.SKIPPED)
             return
 
-        self.test_config(config, results)
+        self.test_config(results, config)
 
     def reproduce(self, configs: List[ConfigType]) -> ResultType:
         """entrypoint to reproduce any failure"""
-        results = {}
+        results: ResultType = {}
         for conf in configs:
             print(f"Starting repro of {conf}")
-            random.seed(self.seed)
-            self._combo_run_common(results, conf)
+            new_config = self.new_config()
+            new_config.update(conf)
+            self.test_config(results, new_config)
         return results
 
     def fuzz_n_tuple(self, n: int, max_combinations: int = 1000) -> ResultType:
@@ -416,7 +424,7 @@ class ConfigFuzzer:
 
         returns a dict of this shape: {(config-1, config-2... config-n): status}
         """
-        results = {}
+        results: ResultType = {}
         print(f"Starting {n}-tuple testing with seed {self.seed}")
         random.seed(self.seed)
 
@@ -447,7 +455,7 @@ class ConfigFuzzer:
                 for name, value in config.items():
                     self._set_config(name, value)
                 comp = torch.compile()(test_model_fn)
-        except:
+        except Exception:  # noqa: E722
             print("Exception compiling with config combination:")
             for field, value in config.items():
                 print(f"{field} = {value}")
@@ -468,7 +476,7 @@ class ConfigFuzzer:
                 ret = Status.PASSED
                 self._set_status(results, config_tuple, ret)
                 return ret
-        except:
+        except Exception:  # noqa: E722
             print("Exception with config combination:")
             for field, value in config.items():
                 print(f"{field} = {value}")
@@ -486,8 +494,8 @@ class ConfigFuzzer:
         print(f"Starting random testing with bisection, seed {self.seed}, and p {p}")
         random.seed(self.seed)
         self._reset_configs()
-        results = {}
-        ret = []
+        results: ResultType = {}
+        ret: List[ConfigType] = []
 
         for attempt in range(num_attempts):
             print(f"Random attempt {attempt + 1}/{num_attempts}")
@@ -505,27 +513,33 @@ class ConfigFuzzer:
 
             status = self.test_config(results, config)
             if status not in {Status.PASSED, Status.SKIPPED}:
-                minimal_failing_config = self._bisect_failing_config(results, config)
-                print(f"Minimum failing config: {minimal_failing_config}")
-                ret.append(minimal_failing_config)
+                if minimal_failing_config := self._bisect_failing_config(
+                    results, config
+                ):
+                    print(f"Minimum failing config: {minimal_failing_config}")
+                    ret.append(minimal_failing_config)
 
         return ret
 
     def _bisect_failing_config(
-        self, results: Dict[Tuple[str, ...], Status], failing_config: Union[dict, list]
-    ) -> Optional[dict]:
+        self, results: ResultType, failing_config: ConfigType
+    ) -> Optional[ConfigType]:
+        return self._bisect_failing_config_helper(results, list(failing_config.items()))
+
+    def _bisect_failing_config_helper(
+        self, results: ResultType, failing_config: List[Tuple[str, Any]]
+    ) -> Optional[ConfigType]:
         """
         Bisect a failing configuration to find minimal set of configs that cause failure.
 
         Splits it into halves, then fourths, then tries dropping configs one-by-one.
         """
         print(f"bisecting config: {failing_config}")
-        if isinstance(failing_config, dict):
-            failing_config = list(failing_config.items())
+
         if not failing_config:
             return None
 
-        def test(x: list):
+        def test(x: List[Tuple[str, Any]]) -> Status:
             d = dict(x)
             result = self.test_config(results, d)
             return result
@@ -533,41 +547,43 @@ class ConfigFuzzer:
         if len(failing_config) <= 1:
             return dict(failing_config) if test(failing_config).failing() else None
 
-        mid = len(failing_config) // 2
+        # Shuffling helps the worst case
+        random.shuffle(failing_config)
 
+        mid = len(failing_config) // 2
         first_half = failing_config[:mid]
         second_half = failing_config[mid:]
         if test(first_half).failing():
-            return self._bisect_failing_config(results, first_half)
+            return self._bisect_failing_config_helper(results, first_half)
         if test(second_half).failing():
-            return self._bisect_failing_config(results, second_half)
+            return self._bisect_failing_config_helper(results, second_half)
 
         if len(failing_config) >= 8:
             low = len(failing_config) // 4
             high = mid + low
             quart1 = failing_config[low:]
             if test(quart1).failing():
-                return self._bisect_failing_config(results, quart1)
+                return self._bisect_failing_config_helper(results, quart1)
             quart2 = failing_config[:low] + second_half
             if test(quart2).failing():
-                return self._bisect_failing_config(results, quart2)
+                return self._bisect_failing_config_helper(results, quart2)
             quart3 = first_half + failing_config[:high]
             if test(quart3).failing():
-                return self._bisect_failing_config(results, quart3)
+                return self._bisect_failing_config_helper(results, quart3)
             quart4 = failing_config[high:]
             if test(quart4).failing():
-                return self._bisect_failing_config(results, quart4)
+                return self._bisect_failing_config_helper(results, quart4)
         # try dropping one value at a time
         for i in range(len(failing_config)):
             new_list = [x for j, x in enumerate(failing_config) if j != i]
             if test(new_list).failing():
-                return self._bisect_failing_config(results, new_list)
+                return self._bisect_failing_config_helper(results, new_list)
         # we have the minimal set
         return dict(failing_config)
 
 
-def create_simple_test_model_cpu():
-    def test_fn():
+def create_simple_test_model_cpu() -> FactoryOutputType:
+    def test_fn() -> bool:
         model = torch.nn.Sequential(
             torch.nn.Linear(10, 10), torch.nn.ReLU(), torch.nn.Linear(10, 1)
         )
@@ -579,12 +595,12 @@ def create_simple_test_model_cpu():
     return test_fn
 
 
-def create_simple_test_model_gpu():
+def create_simple_test_model_gpu() -> FactoryOutputType:
     batch_size = 32
     seq_length = 50
     hidden_size = 768
 
-    def test_fn():
+    def test_fn() -> bool:
         inp = torch.randn(batch_size, seq_length, hidden_size, device="cuda")
         weight = torch.randn(hidden_size, hidden_size, device="cuda")
         matmul_output = inp @ weight
@@ -594,17 +610,19 @@ def create_simple_test_model_gpu():
     return test_fn
 
 
-def visualize_results(n: int, status: ResultType, filename: str = "results.html"):
+def visualize_results(
+    n: int, status: ResultType, filename: str = "results.html"
+) -> None:
     # TODO Support more dimensions
     assert n == 2
     assert len(status) > 0
 
     # Create a dictionary for quick lookup of status
-    input_set = set([])
+    input_set = set({})
     for key in status.keys():
         input_set.add(key[0])
         input_set.add(key[1])
-    input_list = sorted(list(input_set))
+    input_list = sorted(input_set)
 
     # Start the HTML content
     html_content = """
