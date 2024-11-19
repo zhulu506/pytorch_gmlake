@@ -7007,15 +7007,24 @@ class InvokeSubgraph(ExternKernel):
             layout=MultiOutputLayout(device=device),
         )
 
+        def create_layout(output):
+            if isinstance(output, (ShapeAsConstantBuffer, NoneAsConstantBuffer)):
+                # Send a dummy layout
+                return NoneLayout(
+                    device=device,
+                    size=(),
+                )
+            return FixedLayout(
+                device=output.get_device(),
+                dtype=output.get_dtype(),
+                size=output.get_size(),
+                stride=output.get_stride(),
+                offset=output.get_layout().offset,
+            )
+
         outputs = [
             MultiOutput(
-                FixedLayout(
-                    device=output.get_device(),
-                    dtype=output.get_dtype(),
-                    size=output.get_size(),  # type: ignore[arg-type]
-                    stride=output.get_stride(),
-                    offset=output.get_layout().offset,  # type: ignore[union-attr]
-                ),
+                create_layout(output),
                 invoke_subgraph,
                 [(list, i)],
             )
