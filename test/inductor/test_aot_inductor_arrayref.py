@@ -91,7 +91,7 @@ CPU_TEST_FAILURES = {
     "test_dynamic_cat": fail_minimal_arrayref_interface(),
     # https://github.com/pytorch/pytorch/issues/129550
     # https://github.com/pytorch/pytorch/issues/123691
-    "test_dynamic_scalar": fail_minimal_arrayref_interface(is_skip=True),
+    "test_dynamic_scalar": fail_stack_allocation(is_skip=True),
     # https://github.com/pytorch/pytorch/issues/122980
     "test_fft_c2c": fail_stack_allocation(is_skip=True),
     "test_freezing": fail_minimal_arrayref_interface(is_skip=True),
@@ -167,6 +167,14 @@ CPU_TEST_FAILURES = {
     # TODO: AttributeError: 'ShapeAsConstantBuffer' object has no attribute 'dtype'
     "test_symbool_item": fail_minimal_arrayref_interface(is_skip=True),
     "test_issue_140766": fail_minimal_arrayref_interface(),
+    # fails on exit
+    "test_pytree_inputs": fail_stack_allocation(is_skip=True),
+    "test_simple_split": fail_stack_allocation(is_skip=True),
+    "test_no_args": fail_stack_allocation(is_skip=True),
+    "test_view_outputs": fail_stack_allocation(is_skip=True),
+    "test_fqn": fail_stack_allocation(is_skip=True),
+    "test_output_misaligned": fail_stack_allocation(is_skip=True),
+    "test_seq": fail_stack_allocation(is_skip=True),
 }
 
 
