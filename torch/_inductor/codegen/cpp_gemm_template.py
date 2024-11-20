@@ -586,6 +586,9 @@ class CppGemmTemplate(CppTemplate):
     ):
         if input_indices is None:
             input_indices = list(range(len(input_nodes)))
+        only_one_input = (
+            input_nodes[0] == input_nodes[1] if len(input_nodes) > 1 else False
+        )
 
         def reorder_and_filter(inputs, layout_or_out):
             if has_bias:
@@ -698,6 +701,8 @@ class CppGemmTemplate(CppTemplate):
             new_inputs, new_layout = normalize_shapes(
                 *maybe_to_dense(*reorder_and_filter(inputs, layout))
             )
+            if only_one_input and isinstance(new_inputs[0], torch.Tensor):
+                return new_inputs[1:], new_layout
             return cls.prep_weight(new_inputs, new_layout, micro_gemm, block_weights)
 
         def prune_tensors(input_nodes, new_input_nodes):
@@ -833,17 +838,11 @@ class CppGemmTemplate(CppTemplate):
         2. Packing the weight tensor into a VNNI-friendly shape. For constant input,
            this is done at the same time as the weight blocking.
 
-        At compile time, the constant weight tensors are blocked and packed. For non-constant tensors (BMM)
+        At compile time, the constant weight tensors are blocked and packed. For non-constant tensors (e.g. BMM)
         which will be blocked (non-contiguous or VNNI-layout tensors), the weight tensor is blocked and packed at runtime.
 
-        Subclasses can override the functions for each of the cases as necessary:
-            - get_padded_size
-            - _block_weight_irnode
-            - _block_weight_tensor
-            - _pack_vnni_weight_irnode
-            - _pack_vnni_weight_tensor
-        For example, the CppBmmTemplate overrides get_padded_size, block_weight_irnode, and
-        pack_vnni_weight_irnode in order to accommodate an additional dimension for the batch size.
+        CppBmmTemplate overrides the methods get_padded_size, and block_weight_irnode in order to accommodate
+        an additional dimension for the batch size and to determine if the weight tensor should be blocked.
         """
         W = inputs[1]
         new_inputs = list(inputs)
@@ -888,46 +887,89 @@ class CppGemmTemplate(CppTemplate):
     def block_weight(cls, W, new_size, padding):
         # These are separated into two methods to allow subclasses to override them separately
         if isinstance(W, ir.IRNode):
-            return cls._block_weight_irnode(W, new_size, padding)
+            if W.get_name() in V.graph.constants:
+                # Create a new buffer, representing the constant blocked tensor
+                blocked_w = ir.Buffer(
+                    name=W.get_name(),  # Borrow the registered buffer name
+                    layout=ir.FixedLayout(
+                        W.get_device(),
+                        W.get_dtype(),
+                        new_size,
+                        ir.FlexibleLayout.contiguous_strides(new_size),
+                        0,
+                    ),
+                )
+            else:
+                if not isinstance(W, ir.TensorBox):
+                    W = ir.TensorBox(W)
+                permute_dims = list(range(len(new_size)))
+                permute_dims[-2], permute_dims[-3] = permute_dims[-3], permute_dims[-2]
+                permute_size = list(new_size)
+                permute_size[-2], permute_size[-3] = permute_size[-3], permute_size[-2]
+                blocked_w = L.constant_pad_nd(W, (0, padding))
+                blocked_w = L.permute(
+                    L.view(blocked_w, permute_size),
+                    permute_dims,
+                )
         else:
-            return cls._block_weight_tensor(W, new_size, padding)
-
-    @staticmethod
-    def _block_weight_irnode(W, new_size, padding):
-        # Create a new buffer, representing the constant blocked tensor
-        assert isinstance(W, ir.IRNode)
-        blocked_w = ir.Buffer(
-            name=W.get_name(),  # Borrow the registered buffer name
-            layout=ir.FixedLayout(
-                W.get_device(),
-                W.get_dtype(),
-                new_size,
-                ir.FlexibleLayout.contiguous_strides(new_size),
-                0,
-            ),
-        )
-        return blocked_w
-
-    @staticmethod
-    def _block_weight_tensor(W, new_size, padding):
-        # Pad the weight tensor and reshape it into a 3D blocked shape
-        blocked_size = list(new_size)
-        blocked_size[-2], blocked_size[-3] = blocked_size[-3], blocked_size[-2]
-        blocked_w = (
-            torch.nn.functional.pad(W, (0, padding))
-            .reshape(*blocked_size)
-            .transpose(-3, -2)
-            .contiguous()
-        )
+            assert isinstance(W, torch.Tensor)
+            # Pad the weight tensor and reshape it into a 3D blocked shape
+            blocked_size = list(new_size)
+            blocked_size[-2], blocked_size[-3] = blocked_size[-3], blocked_size[-2]
+            blocked_w = (
+                torch.nn.functional.pad(W, (0, padding))  # type: ignore[assignment]
+                .reshape(*blocked_size)
+                .transpose(-3, -2)
+                .contiguous()
+            )
         return blocked_w
 
     @classmethod
     def pack_vnni_weight(cls, W, micro_gemm, new_size):
         # These are separated into two methods to allow subclasses to override them separately
         if isinstance(W, ir.IRNode):
-            return cls._pack_vnni_weight_irnode(W, micro_gemm, new_size)
+            if isinstance(W, ir.Buffer) and W.get_name() in V.graph.constants:
+                return W
+            k = new_size[-2]
+            if not isinstance(W, ir.TensorBox):
+                W = ir.TensorBox(W)
+            if micro_gemm.get_b_layout() != LayoutType.NORMAL:
+                permute_dims = list(range(len(new_size) + 1))
+                permute_dims[-1], permute_dims[-2] = permute_dims[-2], permute_dims[-1]
+                vnni_size = 4 if micro_gemm.get_b_layout() == LayoutType.VNNI4 else 2
+                vnni_view_size = list(new_size)
+                vnni_view_size[-2] = k // vnni_size
+                vnni_view_size.insert(-1, vnni_size)
+                W = L.view(
+                    L.permute(L.view(W, vnni_view_size), permute_dims),
+                    new_size,
+                )
+            W = ir.ExternKernel.realize_input(W)
+            W = ir.ExternKernel.require_contiguous(W)
+            return W
         else:
-            W = cls._pack_vnni_weight_tensor(W, micro_gemm, new_size)
+            k = new_size[-2]
+            # Apply VNNI packing to the weight tensor
+            if micro_gemm.get_b_layout() != LayoutType.NORMAL:
+                # TODO: Move VNNI weight packing for non-constant tensors into the template,
+                # to improve cache locality and avoid full-tensor copy.
+                layout_str = (
+                    "VNNI4"
+                    if micro_gemm.get_b_layout() == LayoutType.VNNI4
+                    else "VNNI2"
+                )
+                assert micro_gemm.get_b_layout() in [
+                    LayoutType.VNNI2,
+                    LayoutType.VNNI4,
+                ], f"We only support {layout_str} for now"
+                vnni_size = 4 if micro_gemm.get_b_layout() == LayoutType.VNNI4 else 2
+                assert (
+                    k % vnni_size == 0
+                ), f"k should be divisible by vnni_size for {layout_str} layout"
+                vnni_view_size = list(new_size)
+                vnni_view_size[-2] = k // vnni_size
+                vnni_view_size.insert(-1, vnni_size)
+                W = W.view(vnni_view_size).transpose(-1, -2).contiguous().view(new_size)
             # normalize stride to be "contiguous_strides" per size
             # this avoids the problems in L.view during template codegen
             new_stride = [1]
@@ -935,37 +977,6 @@ class CppGemmTemplate(CppTemplate):
                 new_stride.insert(0, new_stride[0] * sz)
             W = W.as_strided(W.shape, new_stride)
             return W
-
-    @staticmethod
-    def _pack_vnni_weight_irnode(W, micro_gemm, new_size):
-        # Override in child classes or if the weight tensor is not constant
-        assert W.get_name() in V.graph.constants
-        return W
-
-    @staticmethod
-    def _pack_vnni_weight_tensor(W, micro_gemm, new_size):
-        # Apply VNNI packing to the weight tensor
-
-        # TODO: Move VNNI weight packing for non-constant tensors into the template,
-        # to improve cache locality and avoid full-tensor copy.
-        k = new_size[-2]
-        if micro_gemm.get_b_layout() != LayoutType.NORMAL:
-            layout_str = (
-                "VNNI4" if micro_gemm.get_b_layout() == LayoutType.VNNI4 else "VNNI2"
-            )
-            assert micro_gemm.get_b_layout() in [
-                LayoutType.VNNI2,
-                LayoutType.VNNI4,
-            ], f"We only support {layout_str} for now"
-            vnni_size = 4 if micro_gemm.get_b_layout() == LayoutType.VNNI4 else 2
-            assert (
-                k % vnni_size == 0
-            ), f"k should be divisible by vnni_size for {layout_str} layout"
-            vnni_view_size = list(new_size)
-            vnni_view_size[-2] = k // vnni_size
-            vnni_view_size.insert(-1, vnni_size)
-            W = W.view(vnni_view_size).transpose(-1, -2).contiguous().view(new_size)
-        return W
 
     def get_default_reindexers(self, epilogue_nodes):
         return [None] * len(epilogue_nodes)

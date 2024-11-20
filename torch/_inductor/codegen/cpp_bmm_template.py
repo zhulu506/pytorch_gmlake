@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import sympy
 
-from .. import ir, lowering as L
+from .. import ir
 from ..select_algorithm import PartialRender
 from ..virtualized import V
 from .cpp_gemm_template import CppGemmTemplate, GEMM_TEMPLATE, MICROKERNEL_DEF
@@ -84,6 +84,10 @@ class CppBmmTemplate(CppGemmTemplate):
         two versions of the GEMM kernel: a single-threaded version and a multi-threaded version.
         GEMM kernels are called in a loop over the batch dimension, with single-threaded GEMM calls
         for all but the last (B % num_threads), which are handled by the multi-threaded GEMM kernel.
+
+        We use an extra sizevar `b_index` to index the batch dimension, which we pass into the GEMM
+        template as a sympy.Symbol. This allows us to slice the 3D batch tensors in the GEMM template
+        without any changes to the GEMM template itself.
         """
         super().__init__(
             input_nodes,
@@ -114,48 +118,9 @@ class CppBmmTemplate(CppGemmTemplate):
             return new_size, n
 
     @staticmethod
-    def _block_weight_irnode(W, new_size, padding):
-        assert isinstance(W, ir.IRNode)
-        if W.get_name() in V.graph.constants:
-            return CppGemmTemplate._block_weight_irnode(W, new_size, padding)
-        if not isinstance(W, ir.TensorBox):
-            W = ir.TensorBox(W)
-        permuted_size = list(new_size)
-        permuted_size[-2], permuted_size[-3] = permuted_size[-3], permuted_size[-2]
-        blocked_w = L.constant_pad_nd(W, (0, padding))
-        blocked_w = L.permute(
-            L.view(blocked_w, permuted_size),
-            [0, 2, 1, 3],
-        )
-        return blocked_w
-
-    @staticmethod
-    def _pack_vnni_weight_irnode(W, micro_gemm, new_size):
-        if isinstance(W, ir.Buffer) and W.get_name() in V.graph.constants:
-            # If input is constant, packing is done with a constant tensor, so no change is needed
-            return W
-        # If not, the input needs to be packed here
-        # new_size = [-1, padded_n // block_n, k, block_n]
-        k = new_size[-2]
-        if not isinstance(W, ir.TensorBox):
-            W = ir.TensorBox(W)
-        if micro_gemm.get_b_layout() != LayoutType.NORMAL:
-            vnni_size = 4 if micro_gemm.get_b_layout() == LayoutType.VNNI4 else 2
-            vnni_view_size = list(new_size)
-            vnni_view_size[-2] = k // vnni_size
-            vnni_view_size.insert(-1, vnni_size)
-            W = L.view(
-                L.permute(L.view(W, vnni_view_size), [0, 1, 2, 4, 3]),
-                new_size,
-            )
-        W = ir.ExternKernel.realize_input(W)
-        W = ir.ExternKernel.require_contiguous(W)
-        return W
-
-    @staticmethod
     def check_if_block_weight(W, micro_gemm):
         return micro_gemm.get_b_layout() != LayoutType.NORMAL or (
-            (not W.get_layout().is_contiguous() or W.get_name() in V.graph.constants)
+            (not W.get_layout().is_contiguous() or W.get_name() in V.graph.constants)  # type: ignore[union-attr]
             if isinstance(W, ir.IRNode)
             else not W.is_contiguous()
         )
