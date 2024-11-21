@@ -79,10 +79,10 @@ def cpp_compiler_search(search: str) -> str:
                 # Do not install GXX by default
                 if not os.getenv("TORCH_INDUCTOR_INSTALL_GXX"):
                     continue
-                from filelock import FileLock
+                from torch.utils.waitcounterfilelock import WaitCounterFileLock
 
                 lock_dir = get_lock_dir()
-                lock = FileLock(
+                lock = WaitCounterFileLock(
                     os.path.join(lock_dir, "g++.lock"), timeout=LOCK_TIMEOUT
                 )
                 with lock:

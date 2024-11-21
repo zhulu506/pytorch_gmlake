@@ -101,10 +101,12 @@ cdll.LoadLibrary("__lib_path__")
             "cpp",
             extra=_get_isa_dry_compile_fingerprint(self._arch_flags),
         )
-        from filelock import FileLock
+        from torch.utils.waitcounterfilelock import WaitCounterFileLock
 
         lock_dir = get_lock_dir()
-        lock = FileLock(os.path.join(lock_dir, key + ".lock"), timeout=LOCK_TIMEOUT)
+        lock = WaitCounterFileLock(
+            os.path.join(lock_dir, key + ".lock"), timeout=LOCK_TIMEOUT
+        )
         with lock:
             output_dir = os.path.dirname(input_path)
             buid_options = CppTorchOptions(vec_isa=self, warning_all=False)
