@@ -56,7 +56,7 @@ def make_manual_xml(
         f"</failure></testcase>"
     )
     testsuite = (
-        f'<testsuite name="{classname}" tests="1" errors="0" failures="0" skipped="0" '
+        f'<testsuite name="{classname}" tests="1" errors="0" failures="1" skipped="0" '
         f'time="{duration}" timestamp="{get_timestamp()}">{testcase}</testsuite>'
     )
     s = f"<testsuites>{testsuite}</testsuites>"
