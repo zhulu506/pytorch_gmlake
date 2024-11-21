@@ -1107,14 +1107,6 @@ class TritonHOPifier:
                         and defaults["prune_configs_by"].default
                         != kernel.early_config_prune
                     )
-                    # Set via reset_to_zero argument
-                    # https://github.com/triton-lang/triton/pull/5083
-                    # changes kernel.reset_idx to kernel.reset_to_zero
-                    or (hasattr(kernel, "reset_idx") and len(kernel.reset_idx) != 0)
-                    or (
-                        hasattr(kernel, "reset_to_zero")
-                        and len(kernel.reset_to_zero) != 0
-                    )
                     or (
                         "use_cuda_graph" in defaults
                         and defaults["use_cuda_graph"].default != kernel.use_cuda_graph
@@ -1122,7 +1114,7 @@ class TritonHOPifier:
                 )
             ):
                 self.raise_unsupported(
-                    "Only configs, keys, and restore_value are supported for triton.autotune"
+                    "Only configs, keys, restore_value, and reset_to_zero are supported for triton.autotune"
                 )
             if (
                 not torch._inductor.config.unsafe_ignore_unsupported_triton_autotune_args
@@ -1134,7 +1126,7 @@ class TritonHOPifier:
                 )
             ):
                 self.raise_unsupported(
-                    "pre_hook is not supported in triton.Autotune Configs"
+                    "pre_hook and post_hook are not supported in triton.Autotune or triton.Config"
                 )
 
     def call_getitem(
