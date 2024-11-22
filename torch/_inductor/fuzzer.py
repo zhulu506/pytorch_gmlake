@@ -1,5 +1,7 @@
 import itertools
+import pickle
 import random
+import signal
 import string
 import traceback
 from enum import Enum
@@ -300,6 +302,9 @@ class ConfigFuzzer:
         seed: int,
         default: Optional[ConfigType] = None,
         sm: SamplingMethod = SamplingMethod.TOGGLE,
+        test_timeout: int = 60,
+        dependencies: Optional[Dict[str, List[str]]] = None,
+        config_weights: Optional[Dict[str, float]] = None,
     ):
         """
         Args:
@@ -310,6 +315,10 @@ class ConfigFuzzer:
             sm: How type value samples are generated, default TOGGLE.
         """
         self.seed = seed
+        self.test_timeout = test_timeout
+        self.dependencies = dependencies or {}
+        self.config_weights = config_weights or {}
+        self.detailed_results: Dict[ComboType, Dict[str, Any]] = {}
         self.config_module = config_module
         self.test_model_fn_factory = test_model_fn_factory
         self.fields: Dict[str, _ConfigEntry] = self.config_module._config
@@ -439,7 +448,26 @@ class ConfigFuzzer:
 
         return results
 
+    def save_state(self, filename: str = "fuzzer_state.pkl") -> None:
+        """Save the current fuzzer state to a file"""
+        with open(filename, "wb") as f:
+            pickle.dump(
+                {"results": self.results, "detailed_results": self.detailed_results}, f
+            )
+
+    def load_state(self, filename: str = "fuzzer_state.pkl") -> None:
+        """Load fuzzer state from a file"""
+        with open(filename, "rb") as f:
+            state = pickle.load(f)
+            self.results = state["results"]
+            self.detailed_results = state.get("detailed_results", {})
+
+    def timeout_handler(self, signum, frame):
+        raise TimeoutError("Test execution timed out")
+
     def test_config(self, results: ResultType, config: ConfigType) -> Status:
+        signal.signal(signal.SIGALRM, self.timeout_handler)
+        signal.alarm(self.test_timeout)
         """
         Tests a config
         """
@@ -449,6 +477,7 @@ class ConfigFuzzer:
             return ret
         torch._dynamo.reset()
         test_model_fn = self.test_model_fn_factory()
+
         def set_config():
             for name, value in config.items():
                 self._set_config(name, value)
@@ -459,14 +488,17 @@ class ConfigFuzzer:
             self._reset_configs()
             set_config()
             comp = torch.compile()(test_model_fn)
+
         def run_eager(test_fn):
             if self.config_module.__name__ == "torch._inductor.config":
                 # we didn't set config earlier for compile in inductor
                 set_config()
             return test_fn()
+
         def print_config():
             for field, value in config.items():
                 print(f"{field} = {value}")
+
         def handle_return(message, return_status, print_traceback):
             print(f"{message} with config combination:")
             print_config(config)
@@ -478,7 +510,13 @@ class ConfigFuzzer:
         # try compilation
         try:
             comp = compile_with_options(test_model_fn)
-        except Exception:  # noqa: E722
+        except Exception as exc:  # noqa: E722
+            error_info = {
+                "exception": str(exc),
+                "traceback": traceback.format_exc(),
+                "config": config.copy(),
+            }
+            self.detailed_results[config_tuple] = error_info
             return handle_return("Exception compiling", Status.FAILED_COMPILE, True)
 
         # try running compiled
@@ -490,7 +528,9 @@ class ConfigFuzzer:
         # bool return value means don't compare with eager
         if type(success) is bool:
             if not success:
-                return handle_return("Failure returned bool", Status.FAILED_RUN_RETURN, False)
+                return handle_return(
+                    "Failure returned bool", Status.FAILED_RUN_RETURN, False
+                )
             else:
                 ret = Status.PASSED
                 self._set_status(results, config_tuple, ret)
@@ -500,12 +540,21 @@ class ConfigFuzzer:
             try:
                 eager_results = test_model_fn()
             except Exception:  # noqa: E722
-                return handle_return("Eager exception", Status.FAILED_RUN_EXCEPTION, True)
+                return handle_return(
+                    "Eager exception", Status.FAILED_RUN_EXCEPTION, True
+                )
             for er, cr in zip(eager_results, success):
                 if not torch.isclose(er, cr):
-
+                    return handle_return(
+                        "Results don't match eager", Status.FAILED_RUN_RETURN, False
+                    )
+            ret = Status.PASSED
+            self._set_status(results, config_tuple, ret)
+            return ret
         else:
-            raise ValueError(f"Unable to process return type of test function: {type(success)}")
+            raise ValueError(
+                f"Unable to process return type of test function: {type(success)}"
+            )
 
     def fuzz_with_bisect(
         self, num_attempts: int = 100, p: float = 0.5
@@ -732,3 +781,47 @@ def visualize_results(
         file.write(html_content)
 
     print(f"HTML file '{filename}' has been generated.")
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Config Fuzzer CLI")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument(
+        "--num_attempts", type=int, default=100, help="Number of attempts for fuzzing"
+    )
+    parser.add_argument(
+        "--n", type=int, default=2, help="Number of configurations to combine"
+    )
+    parser.add_argument(
+        "--method",
+        choices=["n_tuple", "random"],
+        default="n_tuple",
+        help="Fuzzing method",
+    )
+    parser.add_argument(
+        "--timeout", type=int, default=60, help="Test timeout in seconds"
+    )
+    parser.add_argument("--save_state", type=str, help="Save state to file")
+    parser.add_argument("--load_state", type=str, help="Load state from file")
+
+    args = parser.parse_args()
+
+    fuzzer = ConfigFuzzer(
+        config_module=torch._inductor.config,
+        test_model_fn_factory=create_simple_test_model_gpu,
+        seed=args.seed,
+        test_timeout=args.timeout,
+    )
+
+    if args.load_state:
+        fuzzer.load_state(args.load_state)
+
+    if args.method == "n_tuple":
+        results = fuzzer.fuzz_n_tuple(n=args.n, max_combinations=args.num_attempts)
+    else:
+        results = fuzzer.fuzz_with_bisect(num_attempts=args.num_attempts)
+
+    if args.save_state:
+        fuzzer.save_state(args.save_state)
