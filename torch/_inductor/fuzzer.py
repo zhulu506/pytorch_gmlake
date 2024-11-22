@@ -93,7 +93,8 @@ TYPE_EXEMPLARS: dict[str, Any] = {
 class Status(Enum):
     SKIPPED = "skipped"
     PASSED = "passed"
-    FAILED_RUN = "failed_run"
+    FAILED_RUN_EXCEPTION = "failed_run_exception"
+    FAILED_RUN_RETURN = "failed_run_return"
     FAILED_COMPILE = "failed_compile"
 
     def failing(self) -> bool:
@@ -285,7 +286,7 @@ DEFAULT = Default()
 ComboType = Tuple[str, ...]
 ResultType = Dict[ComboType, Status]
 ConfigType = Dict[str, Any]
-FactoryOutputType = Callable[[], bool]
+FactoryOutputType = Callable[[], Any]
 FactoryType = Callable[[], FactoryOutputType]
 
 
@@ -469,7 +470,7 @@ class ConfigFuzzer:
                 print("Failure with config combination:")
                 for field, value in config.items():
                     print(f"{field} = {value}")
-                ret = Status.FAILED_RUN
+                ret = Status.FAILED_RUN_RETURN
                 self._set_status(results, config_tuple, ret)
                 return ret
             else:
@@ -481,7 +482,7 @@ class ConfigFuzzer:
             for field, value in config.items():
                 print(f"{field} = {value}")
             traceback.print_exc()
-            ret = Status.FAILED_RUN
+            ret = Status.FAILED_RUN_EXCEPTION
             self._set_status(results, config_tuple, ret)
             return ret
 
@@ -686,7 +687,10 @@ def visualize_results(
                 elif status_enum == Status.PASSED:
                     status_class = "passed"
                     status_val = "O"
-                elif status_enum == Status.FAILED_RUN:
+                elif status_enum == Status.FAILED_RUN_EXCEPTION:
+                    status_class = "failed"
+                    status_val = "E"
+                elif status_enum == Status.FAILED_RUN_RETURN:
                     status_class = "failed"
                     status_val = "R"
                 elif status_enum == Status.FAILED_COMPILE:
