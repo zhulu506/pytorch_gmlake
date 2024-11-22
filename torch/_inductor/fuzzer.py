@@ -26,31 +26,6 @@ from torch._inductor.scheduler import BaseSchedulerNode
 from torch.utils._config_module import _ConfigEntry, ConfigModule
 
 
-"""
-# Known failures on inductor config:
-cpp_wrapper, triton_debug_sync_graph
-cpp_wrapper, triton_debug_sync_kernel
-cpp_wrapper, disable_cpp_codegen
-combo_kernels, benchmark_combo_kernel, profile_bandwidth, profile_bandwidth_regex
-
-# Example usage:
-import torch._inductor.config as cfg
-
-fuzzer = ConfigFuzzer(cfg, create_simple_test_model_gpu, seed=2)
-
-# Test every pair of configs:
-results = fuzzer.fuzz_n_tuple(n, max_combinations=10000000)
-
-visualize_results(n, results)
-
-# Test random configs with bisection:
-ret = fuzzer.fuzz_random_with_bisect(num_attempts=10)
-
-# reproduce a failing config
-fuzzer.reproduce([{"triton.autotune_pointwise": ..., "coordinate_descent_tuning": ...}])
-"""
-
-
 def is_optional_type(type_hint) -> bool:  # type: ignore[no-untyped-def]
     origin = get_origin(type_hint)
 
@@ -293,6 +268,38 @@ FactoryType = Callable[[], FactoryOutputType]
 
 
 class ConfigFuzzer:
+    """
+    This tool makes it easy to search through config state-space with a minimal reproduction or test, either for debugging or just bug hunting.
+    It presents a similar interface to the config bisector by taking a test_function that should either raise on Exception or return False upon failure.
+    It has two entry points:
+     - fuzz_with_bisect, which randomly flips configs and tries to find the minimal reproduction upon failure.
+     - fuzz_n_tuple, which tries every combination of n configs. This grows quickly as a function of n, so beware.
+    fuzz_with_bisect is recommended, but fuzz_n_tuple can give you peace of mind that a new config will compose with every other config.
+
+    # Example usage:
+    import torch._inductor.config as cfg
+
+    fuzzer = ConfigFuzzer(cfg, create_simple_test_model_gpu, seed=2)
+
+    # Test every pair of configs:
+    results = fuzzer.fuzz_n_tuple(n, max_combinations=10000000)
+
+    visualize_results(n, results)
+
+    # Test random configs with bisection:
+    ret = fuzzer.fuzz_random_with_bisect(num_attempts=10)
+
+    # reproduce a failing config
+    fuzzer.reproduce([{"triton.autotune_pointwise": ..., "coordinate_descent_tuning": ...}])
+
+    # Known failures on inductor config:
+    cpp_wrapper, triton_debug_sync_graph
+    cpp_wrapper, triton_debug_sync_kernel
+    cpp_wrapper, disable_cpp_codegen
+    combo_kernels, benchmark_combo_kernel, profile_bandwidth, profile_bandwidth_regex
+
+    """
+
     sample: Callable[[Type[Any], Any], Any]
 
     def __init__(
@@ -302,9 +309,7 @@ class ConfigFuzzer:
         seed: int,
         default: Optional[ConfigType] = None,
         sm: SamplingMethod = SamplingMethod.TOGGLE,
-        test_timeout: int = 60,
-        dependencies: Optional[Dict[str, List[str]]] = None,
-        config_weights: Optional[Dict[str, float]] = None,
+        test_timeout: int = 1800,
     ):
         """
         Args:
@@ -313,11 +318,10 @@ class ConfigFuzzer:
             seed: Randomness seed.
             default: Default values for the config. Inductor has preset based on know failures.
             sm: How type value samples are generated, default TOGGLE.
+            test_timeout: max time a test can take.
         """
         self.seed = seed
         self.test_timeout = test_timeout
-        self.dependencies = dependencies or {}
-        self.config_weights = config_weights or {}
         self.detailed_results: Dict[ComboType, Dict[str, Any]] = {}
         self.config_module = config_module
         self.test_model_fn_factory = test_model_fn_factory
