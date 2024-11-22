@@ -841,7 +841,7 @@ class CppGemmTemplate(CppTemplate):
         At compile time, the constant weight tensors are blocked and packed. For non-constant tensors (e.g. BMM)
         which will be blocked (non-contiguous or VNNI-layout tensors), the weight tensor is blocked and packed at runtime.
 
-        CppBmmTemplate overrides the methods get_padded_size, and block_weight_irnode in order to accommodate
+        CppBmmTemplate overrides the methods get_padded_size, and block_weight in order to accommodate
         an additional dimension for the batch size and to determine if the weight tensor should be blocked.
         """
         W = inputs[1]
