@@ -10,7 +10,6 @@ need to make use of these APIs to setup dynamic shapes support appropriately.
 """
 
 import atexit
-import builtins
 import collections
 import functools
 import inspect
@@ -82,6 +81,7 @@ from torch.utils._sympy.functions import (
     PythonMod,
 )
 from torch.utils._sympy.numbers import int_oo
+from torch.utils._sympy.printers import PythonPrinter
 from torch.utils._sympy.singleton_int import SingletonInt
 from torch.utils._sympy.solve import try_solve
 from torch.utils._sympy.symbol import make_symbol, symbol_is_type, SymT
@@ -109,8 +109,6 @@ log = logging.getLogger(__name__)
 
 import sympy
 from sympy import S
-from sympy.printing.precedence import PRECEDENCE, precedence
-from sympy.printing.str import StrPrinter
 
 
 class GuardOnDataDependentSymNode(RuntimeError):
@@ -145,6 +143,7 @@ __all__ = [
     "SHAPEENV_EVENT_KEY",
     "CURRENT_NODE_KEY",
     "has_free_symbols",
+    "has_free_unbacked_symbols",
     "sym_eq",
     "SymbolicContext",
     "StatelessSymbolicContext",
@@ -302,7 +301,11 @@ def uninteresting_files() -> Set[str]:
         torch._subclasses.meta_utils,
         torch._subclasses.fake_tensor,
     ]
-    return {inspect.getfile(m) for m in mods}
+    import torch._dynamo.guards
+
+    return {
+        inspect.getfile(m) for m in mods
+    } | torch._dynamo.guards.uninteresting_files()
 
 
 class ConstraintViolationError(RuntimeError):
@@ -766,6 +769,19 @@ def free_symbols(val: IterateExprs) -> OrderedSet[sympy.Symbol]:
 def has_free_symbols(val: IterateExprs) -> bool:
     """Faster version of bool(free_symbols(val))"""
     return not all(e.is_number for e in _iterate_exprs(val))
+
+
+def has_free_unbacked_symbols(x: IterateExprs) -> bool:
+    """Faster version of bool(free_unbacked_symbols(val))"""
+    from sympy.core.traversal import iterargs
+
+    for s in _iterate_exprs(x):
+        for arg in iterargs(s):
+            if arg.is_Symbol and symbol_is_type(
+                arg, (SymT.UNBACKED_INT, SymT.UNBACKED_FLOAT)
+            ):
+                return True
+    return False
 
 
 # Like free_symbols, but filtered to only report unbacked symbols
@@ -1342,13 +1358,13 @@ def fx_placeholder_targets(gm: torch.fx.GraphModule) -> List[str]:
 def eval_guards(
     gm: torch.fx.GraphModule, *args: Tensor, ignore_static: bool = True
 ) -> bool:
-    return gm.shape_env.evaluate_guards_for_args(
+    return gm.shape_env.evaluate_guards_for_args(  # type: ignore[operator, union-attr]
         fx_placeholder_vals(gm), args, ignore_static=ignore_static
     )
 
 
 def bind_symbols(gm: torch.fx.GraphModule, *args: Tensor) -> Dict[sympy.Symbol, int]:
-    return gm.shape_env.bind_symbols(fx_placeholder_vals(gm), args)
+    return gm.shape_env.bind_symbols(fx_placeholder_vals(gm), args)  # type: ignore[operator, union-attr]
 
 
 class DimDynamic(Enum):
@@ -1970,43 +1986,9 @@ def cast_symbool_to_symint_guardless(
 
 
 SYMPY_INTERP = {
-    "Abs": operator.abs,
-    "Eq": operator.eq,
-    "Ne": operator.ne,
-    "Gt": operator.gt,
-    "Lt": operator.lt,
-    "Le": operator.le,
-    "Ge": operator.ge,
-    "Min": min,
-    "Max": max,
-    "Mod": operator.mod,
-    "PythonMod": operator.mod,
-    "FloorDiv": operator.floordiv,
-    "TrueDiv": operator.truediv,
-    "PowByNatural": operator.pow,
     "IsNonOverlappingAndDenseIndicator": eval_is_non_overlapping_and_dense,
-    "floor": math.floor,
-    "ceiling": math.ceil,
-    "FloorToInt": math.floor,
-    "FloatPow": math.pow,
-    "CeilToInt": math.ceil,
     "cast_symbool_to_symint_guardless": cast_symbool_to_symint_guardless,
-    "RoundToInt": builtins.round,
-    "RoundDecimal": builtins.round,
-    "TruncToInt": math.trunc,
-    "IntTrueDiv": operator.truediv,
-    "FloatTrueDiv": operator.truediv,
-    "ToFloat": builtins.float,
-    "OpaqueUnaryFn_cos": math.cos,
-    "OpaqueUnaryFn_cosh": math.cosh,
-    "OpaqueUnaryFn_acos": math.acos,
-    "OpaqueUnaryFn_sin": math.sin,
-    "OpaqueUnaryFn_sinh": math.sinh,
-    "OpaqueUnaryFn_asin": math.asin,
-    "OpaqueUnaryFn_tan": math.tan,
-    "OpaqueUnaryFn_tanh": math.tanh,
-    "OpaqueUnaryFn_atan": math.atan,
-    "OpaqueUnaryFn_sqrt": math.sqrt,
+    "math": math,
 }
 
 
@@ -2077,12 +2059,12 @@ class RuntimeAssert:
 
 
 # Used for printing SymExprs in compile_fx
-class SymExprPrinter(StrPrinter):
+class SymExprPrinter(PythonPrinter):
     def _print_Float(self, expr: sympy.Float) -> str:
         return str(float(expr))
 
 
-class ShapeGuardPrinter(SymExprPrinter):
+class ShapeGuardPrinter(PythonPrinter):
     def __init__(
         self,
         symbol_to_source: Mapping[sympy.Symbol, List[Source]],
@@ -2094,14 +2076,8 @@ class ShapeGuardPrinter(SymExprPrinter):
         self.source_ref = source_ref
         self.var_to_sources = var_to_sources
 
-    def _print_Not(self, expr: SympyBoolean) -> str:
-        return "not {}".format(self.parenthesize(expr.args[0], PRECEDENCE["Not"]))
-
-    def _print_And(self, expr: SympyBoolean) -> str:
-        return self.stringify(expr.args, " and ", PRECEDENCE["And"])
-
-    def _print_Or(self, expr: SympyBoolean) -> str:
-        return self.stringify(expr.args, " or ", PRECEDENCE["Or"])
+    def _print_Float(self, expr: sympy.Float) -> str:
+        return str(float(expr))
 
     def _print_Symbol(self, expr: sympy.Symbol) -> str:
         assert isinstance(expr, sympy.Symbol), str(type(expr))
@@ -2127,7 +2103,7 @@ class LoggingShapeGuardPrinter(ShapeGuardPrinter):
         super().__init__(var_to_sources, lambda n: n.name(), var_to_sources)
 
 
-class DynamicDimConstraintPrinter(StrPrinter):
+class DynamicDimConstraintPrinter(PythonPrinter):
     """
     Printer for dynamic dim constraints.
     - Instead of symbol s_k it prints its source t.size()[i]
@@ -2151,9 +2127,6 @@ class DynamicDimConstraintPrinter(StrPrinter):
             expr
         ), f"Unknown symbol {expr} created by constraints solver"
         return self.symbol_to_source[expr][0].name()
-
-    def _print_Relational(self, expr: sympy.core.relational.Relational) -> str:
-        return f"{self.parenthesize(expr.lhs, precedence(expr))} {expr.rel_op} {self.parenthesize(expr.rhs, precedence(expr))}"  # type: ignore[attr-defined]
 
 
 class DimConstraints:
@@ -5183,10 +5156,9 @@ class ShapeEnv:
         symints = {
             s.node.expr for s in symints if isinstance(s.node.expr, sympy.Symbol)
         }
-        guards = []
-        for g in self.guards:
-            if all(s in symints for s in g.expr.free_symbols):
-                guards.append(g)
+        guards = [
+            g for g in self.guards if all(s in symints for s in g.expr.free_symbols)
+        ]
         return guards
 
     def bind_symbols(
@@ -5320,27 +5292,30 @@ class ShapeEnv:
                 # With this, we could remove the need for the commutativity part
                 opposite = sympy.Eq if isinstance(expr, sympy.Ne) else sympy.Ne
                 # Commutativity of == and !=
-                equiv[type(expr)(expr.lhs, expr.rhs)] = sympy.true
-                equiv[type(expr)(expr.rhs, expr.lhs)] = sympy.true
-                equiv[opposite(expr.lhs, expr.rhs)] = sympy.false
-                equiv[opposite(expr.rhs, expr.lhs)] = sympy.false
+                equiv[type(expr)(expr.lhs, expr.rhs, evaluate=False)] = sympy.true
+                equiv[type(expr)(expr.rhs, expr.lhs, evaluate=False)] = sympy.true
+                equiv[opposite(expr.lhs, expr.rhs, evaluate=False)] = sympy.false
+                equiv[opposite(expr.rhs, expr.lhs, evaluate=False)] = sympy.false
             else:
                 # Expr and negation
                 equiv[expr] = sympy.true
+                # we do not pass evaluate=False like others on purpose here!
+                # we want not(a<b) to be a>=b and not ~(a<b).
                 equiv[canonicalize_bool_expr(sympy.Not(expr))] = sympy.false
 
         add_expr(e)
         # Other relational expressions this expression implies
         if isinstance(e, sympy.Eq):
-            add_expr(sympy.Le(e.lhs, e.rhs))
-            add_expr(sympy.Ge(e.lhs, e.rhs))
+            add_expr(sympy.Le(e.lhs, e.rhs, evaluate=False))
+            add_expr(sympy.Ge(e.lhs, e.rhs, evaluate=False))
         elif isinstance(e, sympy.Lt):
-            add_expr(sympy.Le(e.lhs, e.rhs))
-            add_expr(sympy.Ne(e.lhs, e.rhs))
+            add_expr(sympy.Le(e.lhs, e.rhs, evaluate=False))
+            add_expr(sympy.Ne(e.lhs, e.rhs, evaluate=False))
             if e.lhs.is_integer and e.rhs.is_integer:  # type: ignore[attr-defined]
-                add_expr(sympy.Le(e.lhs, e.rhs - 1))
+                add_expr(sympy.Le(e.lhs, e.rhs - 1, evaluate=False))
         elif isinstance(e, sympy.Le):
-            add_expr(sympy.Lt(e.lhs, e.rhs + 1))
+            add_expr(sympy.Lt(e.lhs, e.rhs + 1, evaluate=False))
+
         return tuple(equiv.items())
 
     @_lru_cache
@@ -6012,7 +5987,8 @@ class ShapeEnv:
                 "Ignored guard %s == %s, this could result in accuracy problems",
                 expr,
                 concrete_val,
-                stack_info=True,
+                # only print stack trace when debug mode is on (e.g. TORCH_LOGS="dynamic")
+                stack_info=True if log.getEffectiveLevel() < logging.WARNING else False,
             )
 
     def _get_stack_summary(
@@ -6039,7 +6015,10 @@ class ShapeEnv:
         maybe_user_loc = None
         user_tb = TracingContext.extract_stack()
         if user_tb:
-            maybe_user_loc = format_frame(user_tb[-1], line=True)
+            idx = len(user_tb) - 1
+            while idx > 0 and user_tb[idx].filename in uninteresting_files():
+                idx -= 1
+            maybe_user_loc = format_frame(user_tb[idx], line=True)
 
         maybe_extra_debug = ""
         if is_debug and user_tb:
@@ -6586,7 +6565,7 @@ def _blame_user_code(e: Exception, frame: types.FrameType) -> None:
     e.args = (msg,)
 
 
-class _PythonPrinter(sympy.printing.str.StrPrinter):
+class _PythonMsgPrinter(PythonPrinter):
     """
     Util printer that replaces sympy symbols with their source-level names
     and renders sympy relational operators (e.g., Eq, Ne, Ge, Le) inline
@@ -6600,13 +6579,6 @@ class _PythonPrinter(sympy.printing.str.StrPrinter):
     def _print_Symbol(self, sym: sympy.Symbol) -> str:
         return self.src_map[sym.name][0]
 
-    def _print_Relational(self, expr: sympy.core.relational.Relational) -> str:
-        lhs = self.parenthesize(expr.lhs, sympy.printing.precedence.precedence(expr))
-        assert hasattr(expr, "rel_op")
-        rel_op = expr.rel_op
-        rhs = self.parenthesize(expr.rhs, sympy.printing.precedence.precedence(expr))
-        return f"{lhs} {rel_op} {rhs}"
-
 
 def _suggest_torch_checks(
     e: GuardOnDataDependentSymNode, src_map: DefaultDict[str, List[str]]
@@ -6617,7 +6589,7 @@ def _suggest_torch_checks(
     if diff:
         log.warning("Unable to find user code corresponding to {%s}", diff)
         return
-    printer = _PythonPrinter(src_map)
+    printer = _PythonMsgPrinter(src_map)
     msg = e.args[0]
     msg += "\nTo fix the error, insert one of the following checks before this call:"
     # suggested fixes to resolve `cond`` are to tell the compiler to assume

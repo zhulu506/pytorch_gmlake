@@ -892,7 +892,7 @@ class CppGemmTemplate(CppTemplate):
                 blocked_w = ir.Buffer(
                     name=W.get_name(),  # Borrow the registered buffer name
                     layout=ir.FixedLayout(
-                        W.get_device(),
+                        W.get_device_or_error(),
                         W.get_dtype(),
                         new_size,
                         ir.FlexibleLayout.contiguous_strides(new_size),
@@ -1091,7 +1091,7 @@ class CppGemmTemplate(CppTemplate):
                     return result
 
                 return ir.Pointwise(
-                    device=input_buffer.get_device(),
+                    device=input_buffer.get_device_or_error(),
                     dtype=self.layout.dtype,
                     inner_fn=copy_inner,
                     ranges=input_buffer.get_size(),
