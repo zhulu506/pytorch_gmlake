@@ -663,34 +663,6 @@ class ConfigFuzzer:
         return dict(failing_config)
 
 
-def create_simple_test_model_cpu() -> FactoryOutputType:
-    def test_fn() -> bool:
-        model = torch.nn.Sequential(
-            torch.nn.Linear(10, 10), torch.nn.ReLU(), torch.nn.Linear(10, 1)
-        )
-
-        x = torch.randn(32, 10)
-        y = model(x)
-        return True
-
-    return test_fn
-
-
-def create_simple_test_model_gpu() -> FactoryOutputType:
-    batch_size = 32
-    seq_length = 50
-    hidden_size = 768
-
-    def test_fn() -> bool:
-        inp = torch.randn(batch_size, seq_length, hidden_size, device="cuda")
-        weight = torch.randn(hidden_size, hidden_size, device="cuda")
-        matmul_output = inp @ weight
-        final_output = torch.nn.LayerNorm(hidden_size, device="cuda")(matmul_output)
-        return True
-
-    return test_fn
-
-
 def visualize_results(
     n: int, status: ResultType, filename: str = "results.html"
 ) -> None:
@@ -815,12 +787,43 @@ if __name__ == "__main__":
     )
     parser.add_argument("--save_state", type=str, help="Save state to file")
     parser.add_argument("--load_state", type=str, help="Load state from file")
+    parser.add_argument(
+        "--gpu", type=bool, default=True, help="Whether to test the GPU or not"
+    )
+
+    def create_simple_test_model_cpu() -> FactoryOutputType:
+        def test_fn() -> bool:
+            model = torch.nn.Sequential(
+                torch.nn.Linear(10, 10), torch.nn.ReLU(), torch.nn.Linear(10, 1)
+            )
+
+            x = torch.randn(32, 10)
+            y = model(x)
+            return True
+
+        return test_fn
+
+    def create_simple_test_model_gpu() -> FactoryOutputType:
+        batch_size = 32
+        seq_length = 50
+        hidden_size = 768
+
+        def test_fn() -> bool:
+            inp = torch.randn(batch_size, seq_length, hidden_size, device="cuda")
+            weight = torch.randn(hidden_size, hidden_size, device="cuda")
+            matmul_output = inp @ weight
+            final_output = torch.nn.LayerNorm(hidden_size, device="cuda")(matmul_output)
+            return True
+
+        return test_fn
 
     args = parser.parse_args()
 
     fuzzer = ConfigFuzzer(
         config_module=torch._inductor.config,
-        test_model_fn_factory=create_simple_test_model_gpu,
+        test_model_fn_factory=create_simple_test_model_gpu
+        if args.gpu
+        else create_simple_test_model_cpu,
         seed=args.seed,
         test_timeout=args.timeout,
     )
