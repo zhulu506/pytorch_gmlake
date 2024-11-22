@@ -326,36 +326,46 @@ class ConfigFuzzer:
 
         if default is None:
             if self.config_module.__name__ == "torch._inductor.config":
+                # Why are some configs disabled by default? Because if we don't the fuzzer produces uninteresting results.
+                # It will always hone-in on these failures, even with the most basic model, making it useless for debugging more complex models.
+                #
+                # More explicit explanations are below:
+                # Out of Scope: We can't fuzz, say, the cuda version because that comes from the environment and will produce a failure if not aligned with env.
+                # Known Failure: Disabled due to known failure. Hopefully re-enable. Known failures are listed in the docstring of this file.
+                # Required: Required for the fuzzer to operate (removing caching, etc.)
+                # FSDP: flag meant for FSDP that fails in non FSDP envs. Re-enable these if you're testing FSDP.
+                # Typing: disabled because the type annotation of the config isn't constrained enough to produce meaningful fuzz values. These could be improved.
+                # Timing: These take too long to compile, feel free to enable.
                 self.default = {
-                    "force_disable_caches": True,
-                    "cpp.cxx": DEFAULT,
-                    "TYPE_CHECKING": DEFAULT,
-                    "max_autotune_pointwise": DEFAULT,
-                    "max_autotune_gemm": DEFAULT,
-                    "max_autotune_gemm_backends": DEFAULT,
-                    "max_autotune_conv_backends": DEFAULT,
-                    "max_autotune_gemm_search_space": DEFAULT,
-                    "max_autotune_subproc_result_timeout_seconds": DEFAULT,
-                    "max_autotune_subproc_graceful_timeout_seconds": DEFAULT,
-                    "max_autotune_subproc_terminate_timeout_seconds": DEFAULT,
-                    "autoheuristic_collect": DEFAULT,
-                    "autoheuristic_use": DEFAULT,
-                    "aot_inductor.presets": DEFAULT,
-                    "cuda.arch": DEFAULT,
-                    "cuda.version": DEFAULT,
-                    "cuda.cutlass_dir": DEFAULT,
-                    "cuda.cuda_cxx": DEFAULT,
-                    "rocm.arch": DEFAULT,
-                    "rocm.ck_supported_arch": DEFAULT,
-                    "rocm.ck_dir": DEFAULT,
-                    "rocm.rocm_home": DEFAULT,
-                    "check_stack_no_cycles_TESTING_ONLY": DEFAULT,
-                    "reorder_for_compute_comm_overlap": DEFAULT,
-                    "enabled_metric_tables": DEFAULT,  # disabled due to lack of typing
-                    "triton.debug_sync_graph": DEFAULT,  # disabled due to known failure
-                    "triton.debug_sync_kernel": DEFAULT,  # disabled due to known failure
-                    "profile_bandwidth_regex": DEFAULT,  # disabled due to know failure
-                    "disable_cpp_codegen": DEFAULT,  # disabled due to know failure
+                    "force_disable_caches": True,  # Required
+                    "cpp.cxx": DEFAULT,  # Out of Scope
+                    "TYPE_CHECKING": DEFAULT,  # Not a config
+                    "max_autotune_pointwise": DEFAULT,  # Timing
+                    "max_autotune_gemm": DEFAULT,  # Timing
+                    "max_autotune_gemm_backends": DEFAULT,  # Timing
+                    "max_autotune_conv_backends": DEFAULT,  # Timing
+                    "max_autotune_gemm_search_space": DEFAULT,  # Timing
+                    "max_autotune_subproc_result_timeout_seconds": DEFAULT,  # Timing
+                    "max_autotune_subproc_graceful_timeout_seconds": DEFAULT,  # Timing
+                    "max_autotune_subproc_terminate_timeout_seconds": DEFAULT,  # Timing
+                    "autoheuristic_collect": DEFAULT,  # Typing
+                    "autoheuristic_use": DEFAULT,  # Typing
+                    "aot_inductor.presets": DEFAULT,  # Typing
+                    "cuda.arch": DEFAULT,  # Out of Scope
+                    "cuda.version": DEFAULT,  # Out of Scope
+                    "cuda.cutlass_dir": DEFAULT,  # Out of Scope
+                    "cuda.cuda_cxx": DEFAULT,  # Out of Scope
+                    "rocm.arch": DEFAULT,  # Out of Scope
+                    "rocm.ck_supported_arch": DEFAULT,  # Out of Scope
+                    "rocm.ck_dir": DEFAULT,  # Out of Scope
+                    "rocm.rocm_home": DEFAULT,  # Out of Scope
+                    "check_stack_no_cycles_TESTING_ONLY": DEFAULT,  # Testing
+                    "reorder_for_compute_comm_overlap": DEFAULT,  # FSDP
+                    "enabled_metric_tables": DEFAULT,  # Typing
+                    "triton.debug_sync_graph": DEFAULT,  # Known Failure
+                    "triton.debug_sync_kernel": DEFAULT,  # Known Failure
+                    "profile_bandwidth_regex": DEFAULT,  # Known Failure
+                    "disable_cpp_codegen": DEFAULT,  # Known Failure
                 }
             else:
                 raise ValueError("No default passed to ConfigFuzzer.")
