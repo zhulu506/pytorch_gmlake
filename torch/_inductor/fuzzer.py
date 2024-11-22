@@ -286,7 +286,7 @@ DEFAULT = Default()
 ComboType = Tuple[str, ...]
 ResultType = Dict[ComboType, Status]
 ConfigType = Dict[str, Any]
-FactoryOutputType = Callable[[], Any]
+FactoryOutputType = Callable[[], bool | Tuple[Any]]
 FactoryType = Callable[[], FactoryOutputType]
 
 
@@ -304,7 +304,7 @@ class ConfigFuzzer:
         """
         Args:
             config_module: The module containing the configs to fuzz
-            test_model_fn_factory: Function that returns a test model, which runs and returns True if successful
+            test_model_fn_factory: Function that returns a test model, which runs and returns True if successful, or the outputs if they should be compared with eager
             seed: Randomness seed.
             default: Default values for the config. Inductor has preset based on know failures.
             sm: How type value samples are generated, default TOGGLE.
@@ -314,6 +314,7 @@ class ConfigFuzzer:
         self.test_model_fn_factory = test_model_fn_factory
         self.fields: Dict[str, _ConfigEntry] = self.config_module._config
         self.sample = SamplingMethod.dispatch(sm)
+
         if default is None:
             if self.config_module.__name__ == "torch._inductor.config":
                 self.default = {
@@ -447,44 +448,64 @@ class ConfigFuzzer:
         if ret := self._lookup_status(results, config_tuple):
             return ret
         torch._dynamo.reset()
-        self._reset_configs()
         test_model_fn = self.test_model_fn_factory()
-        try:
+        def set_config():
+            for name, value in config.items():
+                self._set_config(name, value)
+
+        def compile_with_options(test_fn):
             if self.config_module.__name__ == "torch._inductor.config":
-                comp = torch.compile(options=config)(test_model_fn)
-            else:
-                for name, value in config.items():
-                    self._set_config(name, value)
-                comp = torch.compile()(test_model_fn)
-        except Exception:  # noqa: E722
-            print("Exception compiling with config combination:")
+                return torch.compile(options=config)(test_model_fn)
+            self._reset_configs()
+            set_config()
+            comp = torch.compile()(test_model_fn)
+        def run_eager(test_fn):
+            if self.config_module.__name__ == "torch._inductor.config":
+                # we didn't set config earlier for compile in inductor
+                set_config()
+            return test_fn()
+        def print_config():
             for field, value in config.items():
                 print(f"{field} = {value}")
-            traceback.print_exc()
-            ret = Status.FAILED_COMPILE
-            self._set_status(results, config_tuple, ret)
-            return ret
+        def handle_return(message, return_status, print_traceback):
+            print(f"{message} with config combination:")
+            print_config(config)
+            if print_traceback:
+                traceback.print_exc()
+            self._set_status(results, config_tuple, return_status)
+            return return_status
+
+        # try compilation
+        try:
+            comp = compile_with_options(test_model_fn)
+        except Exception:  # noqa: E722
+            return handle_return("Exception compiling", Status.FAILED_COMPILE, True)
+
+        # try running compiled
         try:
             success = comp()
+        except Exception:  # noqa: E722
+            return handle_return("Exception running", Status.FAILED_RUN_EXCEPTION, True)
+
+        # bool return value means don't compare with eager
+        if type(success) is bool:
             if not success:
-                print("Failure with config combination:")
-                for field, value in config.items():
-                    print(f"{field} = {value}")
-                ret = Status.FAILED_RUN_RETURN
-                self._set_status(results, config_tuple, ret)
-                return ret
+                return handle_return("Failure returned bool", Status.FAILED_RUN_RETURN, False)
             else:
                 ret = Status.PASSED
                 self._set_status(results, config_tuple, ret)
                 return ret
-        except Exception:  # noqa: E722
-            print("Exception with config combination:")
-            for field, value in config.items():
-                print(f"{field} = {value}")
-            traceback.print_exc()
-            ret = Status.FAILED_RUN_EXCEPTION
-            self._set_status(results, config_tuple, ret)
-            return ret
+        # try running in eager
+        elif type(success) is tuple:
+            try:
+                eager_results = test_model_fn()
+            except Exception:  # noqa: E722
+                return handle_return("Eager exception", Status.FAILED_RUN_EXCEPTION, True)
+            for er, cr in zip(eager_results, success):
+                if not torch.isclose(er, cr):
+
+        else:
+            raise ValueError(f"Unable to process return type of test function: {type(success)}")
 
     def fuzz_with_bisect(
         self, num_attempts: int = 100, p: float = 0.5
