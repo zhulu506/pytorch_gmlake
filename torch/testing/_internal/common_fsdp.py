@@ -285,7 +285,7 @@ class TransformerWithSharedParams(FSDPTestModel):
         )
         self.register_buffer(
             "long_buffer",
-            torch.zeros_like(self.vocab_bias, dtype=torch.long),
+            torch.zeros_like(self.vocab_bias, dtype=torch.long),  # type: ignore[arg-type]
         )  # type: ignore[arg-type]
 
         self.bs = 2
@@ -640,13 +640,13 @@ class ModuleWithDelay(FSDPTestModel):
         self.module = module
 
     def get_input(self, device):
-        return self.module.get_input(device)
+        return self.module.get_input(device)  # type: ignore[operator]
 
     def forward(self, x):
         return self.module(x)
 
     def get_loss(self, input, output):
-        loss = self.module.get_loss(input, output)
+        loss = self.module.get_loss(input, output)  # type: ignore[operator]
         if self.delay_after_loss_ms > 0:
             if TEST_HPU:
                 time.sleep(self.delay_before_reduction_ms / 1000)
@@ -671,7 +671,7 @@ class ModuleWithDelay(FSDPTestModel):
         with mock.patch(
             "torch.distributed.reduce_scatter_tensor", _delayed_reduce_scatter
         ):
-            self.module.run_backward(loss)
+            self.module.run_backward(loss)  # type: ignore[operator]
 
     @staticmethod
     def init(
@@ -1155,6 +1155,11 @@ class FSDPTest(MultiProcessTestCase):
         return dist.distributed_c10d._get_default_group()
 
     @property
+    def destroy_pg_upon_exit(self) -> bool:
+        # Overriding base test class: do not auto destroy PG upon exit.
+        return False
+
+    @property
     def init_method(self):
         return f"{FILE_SCHEMA}{self.file_name}"
 
@@ -1250,7 +1255,7 @@ class FSDPTest(MultiProcessTestCase):
             optim.zero_grad()
             with torch.amp.autocast(DEVICE_TYPE, enabled=autocast):
                 # Inputs always cuda regardless of cpu offloading, or model.device
-                input = model.module.get_input(torch.device(DEVICE_TYPE))
+                input = model.module.get_input(torch.device(DEVICE_TYPE))  # type: ignore[operator, union-attr]
                 if use_pure_fp16 or (mixed_precision and not isinstance(model, FSDP)):
                     if isinstance(input, torch.Tensor):
                         input = input.half()
@@ -1270,7 +1275,7 @@ class FSDPTest(MultiProcessTestCase):
                         # Params should always be on CPU
                         self.assertEqual(p.device, torch.device("cpu"))
 
-                loss = model.module.get_loss(input, output).to(model_device)
+                loss = model.module.get_loss(input, output).to(model_device)  # type: ignore[operator, union-attr]
             loss = sharded_grad_scaler.scale(loss)
 
             if not mixed_precision and not use_pure_fp16:
@@ -1287,7 +1292,7 @@ class FSDPTest(MultiProcessTestCase):
                     self.assertEqual(loss.dtype, mixed_precision.param_dtype)
                 else:
                     self.assertEqual(loss.dtype, torch.float32)
-            model.module.run_backward(loss)
+            model.module.run_backward(loss)  # type: ignore[operator, union-attr]
             # Post-backward, if CPU offloading model params should be on CPU.
             if cpu_offload_params and isinstance(model, FSDP):
                 for p in model.parameters():
