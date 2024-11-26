@@ -12,7 +12,6 @@ from torch.testing._internal.common_utils import (
     IS_WINDOWS,
     run_tests,
     skipIfRocm,
-    TEST_WITH_TORCHINDUCTOR,
     TestCase,
 )
 from torch.utils._content_store import (
@@ -23,7 +22,7 @@ from torch.utils._content_store import (
 
 
 @unittest.skipIf(IS_WINDOWS, "Test case not supported on Windows")
-@unittest.skipIf(not TEST_WITH_TORCHINDUCTOR, "ContentStore requires Inductor")
+@unittest.skipIf(not torch._dynamo.is_inductor_supported(), "ContentStore requires Inductor")
 class TestContentStore(TestCase):
     def test_basic(self, device):
         # setup test data
