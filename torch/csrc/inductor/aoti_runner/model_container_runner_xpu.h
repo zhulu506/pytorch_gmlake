@@ -15,11 +15,13 @@ class TORCH_API AOTIModelContainerRunnerXpu : public AOTIModelContainerRunner {
       const std::string& model_so_path,
       size_t num_models = 1,
       const std::string& device_str = "xpu",
-      const std::string& cubin_dir = "");
+      const std::string& kernel_bin_dir = "");
 
-  ~AOTIModelContainerRunnerXpu();
+  ~AOTIModelContainerRunnerXpu() override;
 
-  std::vector<at::Tensor> run(std::vector<at::Tensor>& inputs);
+  std::vector<at::Tensor> run(
+      const std::vector<at::Tensor>& inputs,
+      void* stream_handle = nullptr) override;
 
   std::vector<at::Tensor> run_with_xpu_stream(
       std::vector<at::Tensor>& inputs,
