@@ -3866,6 +3866,28 @@ class AOTInductorTestsTemplate:
         example_inputs = (torch.randn(2, 128, 4096, device=self.device),)
         self.check_model(Model(), example_inputs, dynamic_shapes={"x": {0: bs}})
 
+    def test_cond_share_predicte(self):
+        class Model(torch.nn.Module):
+            def forward(self, predicate, x):
+                y = torch.cond(
+                    predicate,
+                    lambda: x + 1,
+                    lambda: x + 2,
+                )
+
+                z = torch.cond(
+                    predicate,
+                    lambda: y + 1,
+                    lambda: y + 2,
+                )
+                return (z,)
+
+        example_inputs = (
+            torch.tensor([True]).to(self.device),
+            torch.tensor([1, 2, 3]).to(self.device),
+        )
+        self.check_model(Model(), example_inputs)
+
 
 class AOTInductorLoggingTest(LoggingTestCase):
     @make_logging_test(dynamic=logging.DEBUG)
