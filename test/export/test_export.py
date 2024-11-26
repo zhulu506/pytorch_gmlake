@@ -61,6 +61,7 @@ from torch.testing._internal.common_cuda import (
 from torch.testing._internal.common_device_type import onlyCPU, onlyCUDA
 from torch.testing._internal.common_utils import (
     find_library_location,
+    GPU_TYPE,
     IS_FBCODE,
     IS_MACOS,
     IS_SANDCASTLE,
@@ -1088,9 +1089,12 @@ graph():
 
         class M(torch.nn.Module):
             def forward(self, a, b):
-                return torch.ops.mylib.foo(a, b)
+                return torch.ops.test_real_tensor_size_mismatch.foo(a, b)
 
-        @torch.library.custom_op("mylib::foo", mutates_args={})
+        # Be careful of the namespace of torch.library.custom_op(namespace::op_name)
+        # the namespace will confict with the namespace of other case, and cause redefine for the same op_name
+        # Similar to issue #140537
+        @torch.library.custom_op("test_real_tensor_size_mismatch::foo", mutates_args={})
         def foo(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
             return a + b
 
@@ -1114,7 +1118,7 @@ graph():
             with self.assertRaisesRegex(
                 error_type,
                 r"Real tensor propagation found an output size mismatch between fake shape 8 and real shape 4, "
-                r"at output\.size\(0\), for func: mylib.foo.default",
+                r"at output\.size\(0\), for func: test_real_tensor_size_mismatch.foo.default",
             ):
                 export(
                     M(),
@@ -1134,7 +1138,7 @@ graph():
             with self.assertRaisesRegex(
                 error_type,
                 r"Real tensor propagation found an output size mismatch between fake shape s1 and real shape 4, "
-                r"at output\.size\(0\), for func: mylib.foo.default",
+                r"at output\.size\(0\), for func: test_real_tensor_size_mismatch.foo.default",
             ):
                 export(
                     M(),
@@ -6250,8 +6254,7 @@ graph():
             export_res = decomposed_ep.module()(x)
             self.assertTrue(export_res.size() == exp_res.size())
 
-    @skipIfXpu
-    def test_export_with_fake_tensor_inputs_on_cuda_devices(self):
+    def test_export_with_fake_tensor_inputs_on_gpu_devices(self):
         fake_mode = torch._subclasses.fake_tensor.FakeTensorMode()
 
         class Model(torch.nn.Module):
@@ -6269,11 +6272,11 @@ graph():
             model = Model()
 
         # Manualy set the fake_device of fake tensors.
-        x.fake_device = torch.device("cuda:0")
+        x.fake_device = torch.device(f"{GPU_TYPE}:0")
         for n, p in model.named_parameters():
-            p.fake_device = torch.device("cuda:0")
+            p.fake_device = torch.device(f"{GPU_TYPE}:0")
 
-        # Need to set all the requires_grad of tensors to False, because fake_tensor with CUDA device
+        # Need to set all the requires_grad of tensors to False, because fake_tensor with GPU device
         # doesn't quite work well with aot_autograd right now due to some logic fails
         # the check in call getDeviceGuardImpl in InputMetadata.
         x.requires_grad = False
@@ -7909,7 +7912,7 @@ def forward(self, x, b_t, y):
         class Model(torch.nn.Module):
             def forward(self, x):
                 with torch.autocast(
-                    device_type="cuda", dtype=torch.int16, enabled=True
+                    device_type=GPU_TYPE, dtype=torch.int16, enabled=True
                 ):
                     y = x.sin().sum()
                 with torch.autocast(
@@ -8896,6 +8899,7 @@ def forward(self, x, y):
     @testing.expectedFailureCppSerDes
     @testing.expectedFailureLegacyExportNonStrict
     @testing.expectedFailureLegacyExportStrict
+    @skipIfXpu(msg="This case also failed on CUDA but not tested in CI, see #140678")
     def test_slice_with_floordiv(self):
         # slice operation emits runtime assert s0//2 <= s1
         class M1(torch.nn.Module):
@@ -9833,7 +9837,7 @@ class TestOneOffModelExportResult(TestCase):
         not PLATFORM_SUPPORTS_FLASH_ATTENTION,
         "Can't run fused SDPA on this platform",
     )
-    def test_scaled_dot_product_attention_cuda(self):
+    def test_scaled_dot_product_attention_gpu(self):
         """
         This test makes sure we are always getting the same decomposition result for SDPA.
         As of now _scaled_dot_product_flash_attention is expected to show up in
@@ -9852,9 +9856,9 @@ class TestOneOffModelExportResult(TestCase):
                 )
                 return attn_output
 
-        q = torch.randn(1, 16, 16, 64, dtype=torch.bfloat16, device="cuda")
-        k = torch.randn(1, 16, 16, 64, dtype=torch.bfloat16, device="cuda")
-        v = torch.randn(1, 16, 16, 64, dtype=torch.bfloat16, device="cuda")
+        q = torch.randn(1, 16, 16, 64, dtype=torch.bfloat16, device=GPU_TYPE)
+        k = torch.randn(1, 16, 16, 64, dtype=torch.bfloat16, device=GPU_TYPE)
+        v = torch.randn(1, 16, 16, 64, dtype=torch.bfloat16, device=GPU_TYPE)
 
         ep = torch.export.export(
             ScaledDotProductAttention(), (q, k, v)
