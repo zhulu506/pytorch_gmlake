@@ -19,6 +19,14 @@ typedef struct VISIBILITY_HIDDEN FrameLocalsMapping {
   py::object _dict{py::none()};
 
  public:
+  PyObject* get(const std::string& key) {
+    return _map[key];
+  }
+
+  PyObject* get(py::handle key) {
+    return _map[py::str(key).cast<std::string>()];
+  }
+
   void set(const std::string& key, PyObject* value) {
     if (!_map.count(key)) {
       names_ordered.push_back(key);
