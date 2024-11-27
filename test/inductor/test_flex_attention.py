@@ -4218,8 +4218,7 @@ def get_params(dtypes: List[torch.dtype]) -> List[Params]:
 
 # ROCM BUG SEE: https://github.com/pytorch/pytorch/issues/140855
 supports_learnable_bias = unittest.skipUnless(
-    torch.cuda.is_available()
-    and torch.utils._triton.has_triton()
+    HAS_CUDA_TRITON
     and torch.cuda.get_device_capability() >= (8, 0)
     and not TEST_WITH_ROCM,
     "Requires CUDA and Triton, and is not supported on ROCm",

@@ -1005,7 +1005,7 @@ def record_compilation_metrics(
         "structured_logging_overhead_us": to_int_us(structured_logging_overhead_s),
         "inductor_config": _scrubbed_inductor_config_for_logging(),
         "cuda_version": torch.version.cuda,
-        "triton_version": triton.__version__ if has_triton() else "",
+        "triton_version": triton.__version__ if has_triton_package() else "",
         "inductor_fx_remote_cache_hit_keys": _convert_collection_to_str(
             "inductor_fx_remote_cache_hit_keys"
         ),
