@@ -12,7 +12,10 @@ import torch._inductor.async_compile  # noqa: F401 required to warm up AsyncComp
 from torch._inductor.codecache import CppCodeCache
 from torch._inductor.utils import get_gpu_shared_memory, is_big_gpu
 from torch._inductor.utils import GPU_TYPES, get_gpu_type
-from torch._inductor.codegen.common import init_backend_registration, get_scheduling_for_device
+from torch._inductor.codegen.common import (
+    init_backend_registration,
+    get_scheduling_for_device,
+)
 from torch.utils._triton import has_triton_package
 from torch.testing._internal.common_utils import (
     LazyVal,
@@ -27,6 +30,7 @@ from torch._dynamo.device_interface import get_interface_for_device
 
 log: logging.Logger = logging.getLogger(__name__)
 
+
 def test_cpu():
     try:
         CppCodeCache.load("")
@@ -39,12 +43,27 @@ def test_cpu():
     ):
         return False
 
+
 HAS_CPU = LazyVal(test_cpu)
 
-HAS_TRITON = has_triton_package()
+
+def _has_triton() -> bool:
+    if not has_triton_package():
+        return False
+
+    try:
+        import triton.runtime
+
+        return triton.runtime.driver.active.is_active()
+    except RuntimeError:
+        return False
+
+
+HAS_TRITON = _has_triton()
 
 # Ensure the scheduling backends are registered first.
 init_backend_registration()
+
 
 def has_inductor_available(device_type: str) -> bool:
     try:
@@ -56,6 +75,7 @@ def has_inductor_available(device_type: str) -> bool:
     except RuntimeError:
         return False
 
+
 def has_triton_backend_available(device_type: str) -> bool:
     try:
         di = get_interface_for_device(device_type)
@@ -63,6 +83,7 @@ def has_triton_backend_available(device_type: str) -> bool:
         return True
     except RuntimeError:
         return False
+
 
 # We have a CUDA device and a compatible Inductor backend.
 HAS_CUDA = torch.cuda.is_available() and has_inductor_available("cuda")
@@ -83,6 +104,7 @@ HAS_MULTIGPU = any(
     getattr(torch, gpu).is_available() and getattr(torch, gpu).device_count() >= 2
     for gpu in GPU_TYPES
 )
+
 
 def _check_has_dynamic_shape(
     self: TestCase,
@@ -105,23 +127,29 @@ def _check_has_dynamic_shape(
 
 def skipDeviceIf(cond, msg, *, device):
     if cond:
+
         def decorate_fn(fn):
             @functools.wraps(fn)
             def inner(self, *args, **kwargs):
                 if not hasattr(self, "device"):
-                    warn_msg = "Expect the test class to have attribute device but not found. "
+                    warn_msg = (
+                        "Expect the test class to have attribute device but not found. "
+                    )
                     if hasattr(self, "device_type"):
                         warn_msg += "Consider using the skip device decorators in common_device_type.py"
                     log.warning(warn_msg)
                 if self.device == device:
                     raise unittest.SkipTest(msg)
                 return fn(self, *args, **kwargs)
+
             return inner
     else:
+
         def decorate_fn(fn):
             return fn
 
     return decorate_fn
+
 
 def skip_windows_ci(name: str, file: str) -> None:
     if IS_WINDOWS and IS_CI:
@@ -133,6 +161,7 @@ def skip_windows_ci(name: str, file: str) -> None:
             sys.exit(0)
         raise unittest.SkipTest("requires sympy/functorch/filelock")
 
+
 requires_gpu = functools.partial(unittest.skipIf, not HAS_GPU, "requires gpu")
 requires_triton = functools.partial(unittest.skipIf, not HAS_TRITON, "requires triton")
 
@@ -140,14 +169,8 @@ skipCUDAIf = functools.partial(skipDeviceIf, device="cuda")
 skipXPUIf = functools.partial(skipDeviceIf, device="xpu")
 skipCPUIf = functools.partial(skipDeviceIf, device="cpu")
 
-IS_A100 = LazyVal(
-    lambda: HAS_CUDA
-    and get_gpu_shared_memory() == 166912
-)
+IS_A100 = LazyVal(lambda: HAS_CUDA and get_gpu_shared_memory() == 166912)
 
-IS_H100 = LazyVal(
-    lambda: HAS_CUDA
-    and get_gpu_shared_memory() == 232448
-)
+IS_H100 = LazyVal(lambda: HAS_CUDA and get_gpu_shared_memory() == 232448)
 
 IS_BIG_GPU = LazyVal(lambda: HAS_CUDA and is_big_gpu(0))
