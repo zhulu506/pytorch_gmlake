@@ -13,6 +13,13 @@ from torch._export.utils import (
 __all__ = ["CustomDecompTable"]
 
 
+PRESERVED_ATEN_CIA_OPS = set(
+    [
+        torch.ops.aten.upsample_bilinear2d.vec,
+    ]
+)
+
+
 class CustomDecompTable(Dict[torch._ops.OperatorBase, Callable]):
     """
     This is a custom dictionary that is specifically used for handling decomp_table in export.
@@ -38,7 +45,8 @@ class CustomDecompTable(Dict[torch._ops.OperatorBase, Callable]):
         self.decomp_table = _core_aten_decompositions_post_autograd()
 
         for op in _collect_all_valid_cia_ops_for_aten_namespace():
-            self.decomp_table[op] = _get_decomp_for_cia(op)
+            if op not in PRESERVED_ATEN_CIA_OPS:
+                self.decomp_table[op] = _get_decomp_for_cia(op)
 
         # This is to track the *pending* deleted custom ops that haven't been materialized yet
         self.deleted_custom_ops = set()

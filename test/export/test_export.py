@@ -10092,30 +10092,30 @@ class TestExportCustomClass(TorchTestCase):
         )
 
     def test_preserve_cia_op(self):
-        class StaticResizeBilinear2dModule(torch.nn.Module):
+        class StaticResizeTrilinear2dModule(torch.nn.Module):
             def forward(self, x):
                 a = torch.nn.functional.interpolate(
                     x,
-                    size=(x.shape[2] * 2, x.shape[3] * 3),
-                    mode="bilinear",
+                    size=(x.shape[2] * 2, x.shape[3] * 3, x.shape[4] * 4),
+                    mode="trilinear",
                     align_corners=False,
                     antialias=False,
                 )
                 return a
 
-        ep = export(StaticResizeBilinear2dModule(), (torch.randn(2, 3, 4, 5),))
+        ep = export(StaticResizeTrilinear2dModule(), (torch.randn(2, 3, 4, 5, 6),))
         FileCheck().check_count(
-            "torch.ops.aten.upsample_bilinear2d.vec", 1, exactly=True
+            "torch.ops.aten.upsample_trilinear3d.vec", 1, exactly=True
         ).run(ep.graph_module.code)
 
         decomp_table = default_decompositions()
-        del decomp_table[torch.ops.aten.upsample_bilinear2d.vec]
+        del decomp_table[torch.ops.aten.upsample_trilinear3d.vec]
         ep = ep.run_decompositions(
             decomp_table=decomp_table,
         )
 
         FileCheck().check_count(
-            "torch.ops.aten.upsample_bilinear2d.vec", 1, exactly=True
+            "torch.ops.aten.upsample_trilinear3d.vec", 1, exactly=True
         ).run(ep.graph_module.code)
 
 
