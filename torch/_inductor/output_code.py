@@ -62,7 +62,6 @@ from .runtime.autotune_cache import AutotuneCacheBundler
 if TYPE_CHECKING:
     from torch._inductor import metrics
     from torch._inductor.graph import GraphLowering
-    from torch.fx import GraphModule
 
     from .compile_fx import _CompileFxKwargs
     from .triton_bundler import TritonKernelArtifacts
@@ -76,7 +75,7 @@ class OutputCode(Protocol):
         self,
         example_inputs: Sequence[InputType],
         cudagraphs: BoxedBool,
-        gm: GraphModule,
+        constants: CompiledFxGraphConstants,
     ) -> None:
         ...
 
@@ -145,7 +144,7 @@ def cudagraph_post_compile(
     example_inputs: Sequence[InputType],
     compiled_graph: CompiledFxGraph,
     cudagraphs: BoxedBool,
-    gm: Optional[torch.fx.GraphModule],
+    constants: Dict[str, torch.Tensor],
 ) -> None:
     """
     Checks for any reasons not to run cudagraphs and then
@@ -191,7 +190,7 @@ def cudagraph_post_compile(
             stack_traces=stack_traces,
             is_backward=is_backward,
             is_inference=is_inference,
-            constants=tuple(compiled_graph.get_constants(gm).values()),
+            constants=tuple(constants.values()),
             placeholders=placeholders,
             mutated_input_idxs=tuple(compiled_graph.mutated_input_idxs),
         )
@@ -250,6 +249,52 @@ def maybe_realign_inputs(
         )
         if new_callable is not compiled_graph.current_callable:
             compiled_graph.current_callable = new_callable
+
+
+class CompiledFxGraphConstants:
+    """Wrapper class that unwraps constants from a compiled fx graph. This
+    version of the class only supports directly grabbing the saved constants off of
+    a CompiledFxGraph.
+
+    With freezing, FxGraphCache doesn't store the constants of the input
+    GraphModule it gets from AOTAutograd. Instead, it saves just the **names**
+    of those constants, and grabs the constant values directly from the graph module
+    passed in at runtime.
+
+    Thing is, we don't always *have* the graph module available at runtime, hence
+    the existence of this class and its CompiledFxGraphConstantsWithGm counterpart.
+
+    To support freezing, FXGraphCache gets passed a CompiledFxGraphConstantsWithGm during
+    post compile. Otherwise, CompiledFxGraphConstants supports the basic case of loading
+    the value of constants directly off of the original saved object.
+    """
+
+    def unwrap(self, g: CompiledFxGraph) -> Dict[str, torch.Tensor]:
+        assert g.constants is not None
+        return g.constants
+
+
+class CompiledFxGraphConstantsWithGm(CompiledFxGraphConstants):
+    """
+    This version of CompiledFxGraphConstants, instead of grabbing constants
+    directly saved on CompiledFxGraphs, will just grab their names. Then, it takes
+    a second GraphModule to grab the corresponding constant values out of.
+
+    This is necessary for supporting freezing in FxGraphCache.
+    """
+
+    def __init__(self, gm: torch.fx.GraphModule) -> None:
+        self.gm = gm
+
+    def unwrap(self, g: CompiledFxGraph) -> Dict[str, torch.Tensor]:
+        if g.allocated_constant_name is not None:
+            return {
+                name: getattr(self.gm, name)
+                for name in g.allocated_constant_name.values()
+            }
+        else:
+            assert g.constants is not None
+            return g.constants
 
 
 @dataclasses.dataclass
@@ -425,7 +470,7 @@ class CompiledFxGraph:
         self,
         example_inputs: Sequence[InputType],
         cudagraphs: BoxedBool,
-        gm: GraphModule,
+        constants: CompiledFxGraphConstants,
     ) -> None:
         """
         Run a set of post processing steps after loading from the cache. These involve:
@@ -455,7 +500,7 @@ class CompiledFxGraph:
                     example_inputs,
                     self,
                     cudagraphs,
-                    gm,
+                    constants.unwrap(self),
                 )
         inputs_to_check = self.inputs_to_check
         # cudagraphs could have been disabled from the earlier conditions
@@ -468,26 +513,6 @@ class CompiledFxGraph:
 
     def set_triton_bundle(self, triton_bundle: Any) -> None:
         self._triton_bundle = triton_bundle
-
-    def get_constants(
-        self, gm: Optional[torch.fx.GraphModule]
-    ) -> Dict[str, torch.Tensor]:
-        """
-        Get the constant attributes.
-        """
-        # Normal case: The constants are stored in the entry.
-        if self.constants is not None:
-            return self.constants
-
-        # Freezing case: Look up the constants from attributes on the GraphModule using
-        # the allocated_constant_name map.
-        assert gm is not None
-        assert self.allocated_constant_name is not None
-        constants = {
-            name: getattr(gm, orig_name)
-            for name, orig_name in self.allocated_constant_name.items()
-        }
-        return constants
 
 
 def _typecheck_CompiledFxGraph(h: CompiledFxGraph) -> OutputCode:
@@ -513,7 +538,7 @@ class CompiledAOTI:
         self,
         example_inputs: Sequence[InputType],
         cudagraphs: BoxedBool,
-        gm: GraphModule,
+        constants: CompiledFxGraphConstants,
     ) -> None:
         pass
 
@@ -542,7 +567,7 @@ class MockFXGraphCacheOutput(OutputCode):
         self,
         example_inputs: Sequence[InputType],
         cudagraphs: BoxedBool,
-        gm: GraphModule,
+        constants: CompiledFxGraphConstants,
     ) -> None:
         pass
 
