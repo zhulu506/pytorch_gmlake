@@ -5,6 +5,7 @@ from typing import Dict, List, TYPE_CHECKING
 
 import torch
 from torch._dynamo.source import GetItemSource
+from torch.utils._ordered_set import OrderedSet
 
 from .. import variables
 from ..exc import unimplemented, UserError, UserErrorType
@@ -30,7 +31,7 @@ class ConstantVariable(VariableTracker):
         source = kwargs.get("source", None)
 
         # Routing for supported collection literals.
-        if isinstance(value, set):
+        if isinstance(value, (OrderedSet, OrderedSet)):
             items = [ConstantVariable.create(x) for x in value]
             return variables.SetVariable(items, **kwargs)
         elif isinstance(value, frozenset):
@@ -99,7 +100,14 @@ its type to `common_constant_types`.
 
     @staticmethod
     def is_literal(obj):
-        if type(obj) in (list, tuple, set, frozenset, torch.Size):
+        if type(obj) in (
+            list,
+            set,  # noqa: set_linter
+            tuple,
+            frozenset,
+            OrderedSet,
+            torch.Size,
+        ):
             return all(ConstantVariable.is_literal(x) for x in obj)
         return ConstantVariable.is_base_literal(obj)
 

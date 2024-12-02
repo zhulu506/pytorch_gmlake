@@ -24,6 +24,7 @@ from torch._ops import HigherOrderOperator
 from torch.fx.node import map_arg
 from torch.fx.passes.shape_prop import _extract_tensor_metadata
 from torch.utils import _pytree as pytree
+from torch.utils._ordered_set import OrderedSet
 
 from .. import variables
 from ..exc import (
@@ -114,7 +115,7 @@ def find_mismatched_vars(var, types, allow_none=False):
     Returns:
         A set of variables whose type is not an instance of the specified types.
     """
-    mismatched_vars = set()
+    mismatched_vars = OrderedSet()
     if isinstance(var, (TupleVariable, ListVariable)):
         for item in var.items:
             mismatched_vars.update(find_mismatched_vars(item, types, allow_none))
@@ -176,12 +177,12 @@ def _call_function_and_unflatten_output(
 
 
 def _assert_tensors_nonaliasing(inputs, outputs):
-    input_tensor_ids = {
+    input_tensor_ids = OrderedSet(
         id(t) for t in pytree.tree_leaves(inputs) if isinstance(t, torch.Tensor)
-    }
-    output_tensor_ids = {
+    )
+    output_tensor_ids = OrderedSet(
         id(t) for t in pytree.tree_leaves(outputs) if isinstance(t, torch.Tensor)
-    }
+    )
     assert input_tensor_ids.isdisjoint(
         output_tensor_ids
     ), "inputs to function body cannot alias outputs"
@@ -456,12 +457,14 @@ def speculate_subgraph(
     if sub_kwargs is None:
         sub_kwargs = {}
 
-    assert set_subgraph_inputs in {
-        "automatic",
-        "semi_automatic",
-        "flatten_manual",
-        "manual",
-    }, "Please use one of the supported set_subgraph_inputs options."
+    assert set_subgraph_inputs in OrderedSet(
+        [
+            "automatic",
+            "semi_automatic",
+            "flatten_manual",
+            "manual",
+        ]
+    ), "Please use one of the supported set_subgraph_inputs options."
 
     # See NOTE [Temporary argument `set_subgraph_inputs`]
     if sub_kwargs and set_subgraph_inputs != "automatic":
@@ -594,9 +597,9 @@ def speculate_subgraph(
                 def move_lifted_freevars_phs_to_end(
                     graph: torch.fx.Graph, lifted_freevars: Tuple[torch.fx.Node]
                 ):
-                    lifted_ph_set = {
+                    lifted_ph_set = OrderedSet(
                         child_p.node for child_p in lifted_freevars.values()
-                    }
+                    )
 
                     prev_phs = [n for n in graph.nodes if n.op == "placeholder"]
 
@@ -2512,7 +2515,7 @@ class AutogradFunctionApplyVariable(VariableTracker):
         # at torch._functorch.autograd_function.AutogradFunctionApply for reconstruction.
         non_differentiable_idx = []
         if ctx.non_differentiable is not None:
-            non_differentiable_set = set(ctx.non_differentiable)
+            non_differentiable_set = OrderedSet(ctx.non_differentiable)
             assert isinstance(fwd_out, variables.BaseListVariable)
             for i, x in enumerate(fwd_out.items):
                 if (

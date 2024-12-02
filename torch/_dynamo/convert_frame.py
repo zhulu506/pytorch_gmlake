@@ -22,7 +22,7 @@ import warnings
 import weakref
 from pathlib import Path
 from types import CellType, CodeType, FunctionType, ModuleType
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeVar, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar, Union
 from typing_extensions import ParamSpec
 from weakref import ReferenceType
 
@@ -47,6 +47,7 @@ from torch.fx.experimental.symbolic_shapes import (
 from torch.fx.graph_module import _forward_from_src as original_forward_from_src
 from torch.monitor import _WaitCounter
 from torch.nn.parallel.distributed import DistributedDataParallel
+from torch.utils._ordered_set import OrderedSet
 from torch.utils._python_dispatch import (
     _disable_current_modes,
     is_in_torch_dispatch_mode,
@@ -158,7 +159,7 @@ class TODO_UNKNOWN:
 class Tracker:
     def __init__(self) -> None:
         self.seen: List[ReferenceType[CodeType]] = []
-        self.seen_ids: Set[int] = set()
+        self.seen_ids: OrderedSet[int] = OrderedSet()
 
     def add(self, strong_obj: CodeType) -> None:
         idx = id(strong_obj)
@@ -877,7 +878,7 @@ def _compile(
     ), chromium_event_timed(
         "dynamo", reset_event_log=True, log_pt2_compile_event=True
     ), metrics_context:
-        restart_reasons: set[str] = set()
+        restart_reasons = OrderedSet[str]()
         # This is shared across restarts
         speculation_log = SpeculationLog()
         if compile_pg := get_compile_pg():
@@ -1054,10 +1055,12 @@ def _compile(
                 graph_op_count = output.count_calls()
                 graph_node_count = len(output.graph.nodes)
                 graph_input_count = len(output.placeholders)
-                non_compliant_ops = {op.__qualname__ for op in output.non_compliant_ops}
-                compliant_custom_ops = {
+                non_compliant_ops = OrderedSet(
+                    op.__qualname__ for op in output.non_compliant_ops
+                )
+                compliant_custom_ops = OrderedSet(
                     op.__qualname__ for op in output.compliant_custom_ops
-                }
+                )
                 torch._dynamo.utils.ReinplaceCounters.log()
             else:
                 guard_count = None
@@ -1065,36 +1068,38 @@ def _compile(
                 graph_op_count = None
                 graph_node_count = None
                 graph_input_count = None
-                non_compliant_ops = set({})
-                compliant_custom_ops = set({})
-                restart_reasons = set()
+                non_compliant_ops = OrderedSet()
+                compliant_custom_ops = OrderedSet()
+                restart_reasons = OrderedSet()
                 # If compilation failed, the entire time is wasted
                 dynamo_time_before_restart = (time.time_ns() - start_time_ns) / 1e9
 
             def clean_for_json(d: Dict[str, Any]) -> Dict[str, Any]:
-                blocklist = {
-                    "TYPE_CHECKING",
-                    "log_file_name",
-                    "verbose",
-                    "repro_after",
-                    "repro_level",
-                    "repro_forward_only",
-                    "repro_tolerance",
-                    "repro_ignore_non_fp",
-                    "same_two_models_use_fp64",
-                    "base_dir",
-                    "debug_dir_root",
-                    "_save_config_ignore",
-                    "log_compilation_metrics",
-                    "inject_BUILD_SET_unimplemented_TESTING_ONLY",
-                    "_autograd_backward_strict_mode_banned_ops",
-                    "reorderable_logging_functions",
-                    "traceable_tensor_subclasses",
-                    "_custom_ops_profile",
-                }
+                blocklist = OrderedSet(
+                    [
+                        "TYPE_CHECKING",
+                        "log_file_name",
+                        "verbose",
+                        "repro_after",
+                        "repro_level",
+                        "repro_forward_only",
+                        "repro_tolerance",
+                        "repro_ignore_non_fp",
+                        "same_two_models_use_fp64",
+                        "base_dir",
+                        "debug_dir_root",
+                        "_save_config_ignore",
+                        "log_compilation_metrics",
+                        "inject_BUILD_SET_unimplemented_TESTING_ONLY",
+                        "_autograd_backward_strict_mode_banned_ops",
+                        "reorderable_logging_functions",
+                        "traceable_tensor_subclasses",
+                        "_custom_ops_profile",
+                    ]
+                )
 
                 return {
-                    key: list(value) if isinstance(value, set) else value
+                    key: list(value) if isinstance(value, OrderedSet) else value
                     for key, value in d.items()
                     if key not in blocklist
                 }

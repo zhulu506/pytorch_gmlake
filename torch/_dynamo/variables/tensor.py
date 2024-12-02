@@ -24,6 +24,7 @@ from torch.fx.experimental.symbolic_shapes import (
     is_symbolic,
     SymTypes,
 )
+from torch.utils._ordered_set import OrderedSet
 from torch.utils._python_dispatch import is_traceable_wrapper_subclass
 
 from .. import config, variables
@@ -104,24 +105,26 @@ def is_bound_tensor_method(value):
 class TensorVariable(VariableTracker):
     """A torch.Tensor input or an intermediate value in the FX graph"""
 
-    _nonvar_fields = {
-        "proxy",
-        "dtype",
-        "device",
-        "layout",
-        "ndim",
-        "size",
-        "stride",
-        "requires_grad",
-        "is_quantized",
-        "is_contiguous",
-        "is_nested",
-        "is_sparse",
-        "class_type",
-        "specialized_value",
-        "_is_name_set",
-        *VariableTracker._nonvar_fields,
-    }
+    _nonvar_fields = OrderedSet(
+        [
+            "proxy",
+            "dtype",
+            "device",
+            "layout",
+            "ndim",
+            "size",
+            "stride",
+            "requires_grad",
+            "is_quantized",
+            "is_contiguous",
+            "is_nested",
+            "is_sparse",
+            "class_type",
+            "specialized_value",
+            "_is_name_set",
+            *VariableTracker._nonvar_fields,
+        ]
+    )
 
     def get_real_value(self):
         """
@@ -1150,11 +1153,13 @@ class SymNodeVariable(VariableTracker):
     handle logic like float_tensor.item() or unspecialized float inputs.
     """
 
-    _nonvar_fields = {
-        "proxy",
-        "sym_num",
-        *VariableTracker._nonvar_fields,
-    }
+    _nonvar_fields = OrderedSet(
+        [
+            "proxy",
+            "sym_num",
+            *VariableTracker._nonvar_fields,
+        ]
+    )
 
     def debug_repr(self):
         return repr(self.sym_num)
@@ -1342,11 +1347,13 @@ class UnspecializedPythonVariable(TensorVariable):
     This is a 1-element tensor represents unspecialized python float/int.
     """
 
-    _nonvar_fields = {
-        "raw_value",
-        "need_unwrap",
-        *TensorVariable._nonvar_fields,
-    }
+    _nonvar_fields = OrderedSet(
+        [
+            "raw_value",
+            "need_unwrap",
+            *TensorVariable._nonvar_fields,
+        ]
+    )
 
     def __init__(
         self, proxy: torch.fx.Proxy, *, raw_value=None, need_unwrap=True, **kwargs
@@ -1369,10 +1376,12 @@ class FakeItemVariable(TensorVariable):
     """An unspecialized python variable which prevents access to the underlying raw value.
     This is needed if item is called on a FakeTensor."""
 
-    _nonvar_fields = {
-        "need_unwrap",
-        *TensorVariable._nonvar_fields,
-    }
+    _nonvar_fields = OrderedSet(
+        [
+            "need_unwrap",
+            *TensorVariable._nonvar_fields,
+        ]
+    )
 
     def __init__(self, proxy: torch.fx.Proxy, **kwargs) -> None:
         need_unwrap = kwargs.pop("need_unwrap", False)
@@ -1412,10 +1421,12 @@ class TensorSubclassVariable(VariableTracker):
 
 
 class UntypedStorageVariable(VariableTracker):
-    _nonvar_fields = {
-        "example_value",
-        *VariableTracker._nonvar_fields,
-    }
+    _nonvar_fields = OrderedSet(
+        [
+            "example_value",
+            *VariableTracker._nonvar_fields,
+        ]
+    )
 
     def __init__(
         self,

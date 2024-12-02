@@ -7,6 +7,8 @@ import sys
 import types
 from typing import Any, Callable, cast, Dict, Iterator, List, Optional, Tuple, Union
 
+from torch.utils._ordered_set import OrderedSet
+
 from .bytecode_analysis import (
     get_indexof,
     propagate_line_nums,
@@ -678,7 +680,7 @@ def virtualize_jumps(instructions) -> None:
             inst.target = _get_instruction_by_offset(jump_targets, inst.argval)
 
 
-_REL_JUMPS = set(dis.hasjrel)
+_REL_JUMPS = OrderedSet(dis.hasjrel)
 
 
 def flip_jump_direction(instruction: Instruction) -> None:
@@ -710,7 +712,7 @@ def _get_instruction_front(instructions: List[Instruction], idx: int):
 
 def devirtualize_jumps(instructions):
     """Fill in args for virtualized jump target after instructions may have moved"""
-    jumps = set(dis.hasjabs).union(set(dis.hasjrel))
+    jumps = OrderedSet(dis.hasjabs).union(OrderedSet(dis.hasjrel))
 
     # check for negative jump args and fix them
     for inst in instructions:
@@ -928,7 +930,7 @@ def check_inst_exn_tab_entries_valid(instructions: List[Instruction]):
     Implicitly checks for no duplicate instructions.
     """
     indexof = get_indexof(instructions)
-    exn_tab_entry_set = set()
+    exn_tab_entry_set = OrderedSet[int]()
     for i, inst in enumerate(instructions):
         if inst.exn_tab_entry:
             assert sys.version_info >= (3, 11)
@@ -1169,10 +1171,10 @@ def debug_checks(code):
     assert code.co_lnotab == dode.co_lnotab, debug_bytes(code.co_lnotab, dode.co_lnotab)
 
 
-HAS_LOCAL = set(dis.haslocal)
-HAS_NAME = set(dis.hasname)
-HAS_FREE = set(dis.hasfree)
-HAS_CONST = set(dis.hasconst)
+HAS_LOCAL = OrderedSet(dis.haslocal)
+HAS_NAME = OrderedSet(dis.hasname)
+HAS_FREE = OrderedSet(dis.hasfree)
+HAS_CONST = OrderedSet(dis.hasconst)
 
 
 def get_const_index(code_options, val) -> int:
@@ -1392,9 +1394,9 @@ def clean_and_assemble_instructions(
 
     code_options["co_code"] = bytecode
     code_options["co_stacksize"] = stacksize_analysis(instructions)
-    assert set(keys) - {"co_posonlyargcount"} == set(code_options.keys()) - {
-        "co_posonlyargcount"
-    }
+    assert (OrderedSet(keys) - OrderedSet(["co_posonlyargcount"])) == (
+        OrderedSet(code_options.keys()) - OrderedSet(["co_posonlyargcount"])
+    )
     if sys.version_info >= (3, 11):
         code_options["co_exceptiontable"] = assemble_exception_table(
             compute_exception_table(instructions)

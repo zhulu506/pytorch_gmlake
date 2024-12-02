@@ -19,13 +19,14 @@ import traceback
 import types
 import typing
 import weakref
-from typing import Any, Callable, cast, Dict, List, Optional, Set, Tuple, Type, Union
+from typing import Any, Callable, cast, Dict, List, Optional, Tuple, Type, Union
 from unittest.mock import patch
 
 import torch
 import torch._logging
 from torch._dynamo.exc import TensorifyScalarRestartAnalysis
 from torch._guards import tracing, TracingContext
+from torch.utils._ordered_set import OrderedSet
 
 from . import config, exc, logging as torchdynamo_logging, trace_rules, variables
 from .bytecode_analysis import (
@@ -250,7 +251,7 @@ class TensorifyState:
     # These are the set of string symfloats names (eg. "zf0") that we collect
     # from the tensorify_python_scalars.py joint fx pass to inform us about
     # which float inputs we should specialize when we restart analysis.
-    force_specializations: Set[str] = set()
+    force_specializations: OrderedSet[str] = OrderedSet()
 
     @classmethod
     def specialize(cls, index: str) -> None:
@@ -2131,7 +2132,7 @@ class InstructionTranslatorBase(
             elif isinstance(part, variables.StringFormatVariable):
                 format_string_parts.append(part.format_string)
                 args.extend(part.sym_args)
-                if set(kwargs.keys()) & set(part.sym_kwargs.keys()):
+                if OrderedSet(kwargs.keys()) & OrderedSet(part.sym_kwargs.keys()):
                     unimplemented(
                         f"BUILD_STRING key conflict {kwargs} & {part.sym_kwargs}"
                     )
@@ -2744,7 +2745,7 @@ class InstructionTranslator(InstructionTranslatorBase):
 
             self.symbolic_locals = {}
             # Populate `symbolic_locals` with non-cell variables.
-            cell_and_freevars: Set[str] = set(self.cell_and_freevars())
+            cell_and_freevars: OrderedSet[str] = OrderedSet(self.cell_and_freevars())
             for name, value in f_locals.items():
                 if name not in cell_and_freevars:
                     var = LazyVariableTracker.create(
