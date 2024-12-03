@@ -24,7 +24,12 @@ import torch
 
 from .. import polyfills, variables
 from ..bytecode_transformation import create_call_function, create_rot_n
-from ..exc import unimplemented, Unsupported
+from ..exc import (
+    handle_observed_exception,
+    ObservedUserStopIteration,
+    unimplemented,
+    Unsupported,
+)
 from ..guards import GuardBuilder, install_guard
 from ..source import AttrSource, ConstantSource, DefaultsSource, GetItemSource
 from ..utils import (
@@ -330,19 +335,16 @@ class UserFunctionVariable(BaseUserFunctionVariable):
         return super().call_function(tx, args, kwargs)
 
 
-class FunctionDecoratedByContextlibContextManagerVariable(BaseUserFunctionVariable):
-    # TODO(guilherme): replace this with a generic GeneratorFunctionVariable
-
+class GeneratorFunctionVariable(BaseUserFunctionVariable):
     """functions that behaves like iterators
 
     .. note::
 
-        This is only used when the function is annotated with @contextlib.contextmanager
+        This is a wrapper around (Nested)UserFunctionVariable
     """
 
     def __init__(self, vt: VariableTracker, **kwargs):
         self.vt = vt
-        self.inline_tracer = None
 
     def __getattr__(self, name):
         if name in self.__class__.__dict__.keys():
@@ -357,37 +359,151 @@ class FunctionDecoratedByContextlibContextManagerVariable(BaseUserFunctionVariab
     ) -> "VariableTracker":
         from torch._dynamo.bytecode_transformation import is_generator
 
-        assert is_generator(self.get_code())
+        assert is_generator(self.vt.get_code())
         from torch._dynamo.symbolic_convert import InliningInstructionTranslator
 
-        self.inline_tracer = InliningInstructionTranslator.build_inline_tracer(
+        inline_tracer = InliningInstructionTranslator.build_inline_tracer(
             tx,
             self,
-            [*self.self_args(), *args],
+            # [*self.vt.self_args(), *args],
+            [*args],
             kwargs,
-            stop_generator_on_yield=True,
         )
 
-        return self
+        code = self.vt.get_code()
+        _globals = self.vt.get_globals()
+        _locals = self.vt.bind_args(tx, args, kwargs)
+        fn = types.FunctionType(
+            code,
+            _globals,
+            self.get_name(),  # name
+            # TODO: Correctly place argdefs here!
+            None,  # argdefs
+            tuple(
+                make_cell(None) for _ in range(len(self.get_code().co_freevars))
+            ),  # closure
+        )
+        # gen_obj = fn(*args)
+        # _args = [_locals.get(name) for name in code.co_varnames if name in _locals]
+        _args = [_locals.get(name) for name in inspect.signature(fn).parameters.keys()]
+        gen_obj = fn(*_args)
+
+        # calling a generator returns a generator object
+        return GeneratorObjectVariable(gen_obj, inline_tracer, source=self.source)
+
+
+class GeneratorObjectVariable(VariableTracker):
+    def __init__(
+        self,
+        # vt: VariableTracker,
+        value: types.GeneratorType,
+        inline_tracer: Optional["InstructionTranslator"],
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        assert isinstance(value, types.GeneratorType)
+        self.value = value
+        self.inline_tracer = inline_tracer
+
+    def get_code(self):
+        return self.value.gi_code
+
+    def get_filename(self):
+        return self.get_code().co_filename
+
+    def get_name(self):
+        return self.get_code().co_name
+
+    def get_function(self):
+        return self.value
+
+    def has_self(self):
+        # This is an object, it should have a self! But we cannot inline objects(?)
+        return False
+
+    def __name__(self):
+        return self.get_name()
+
+    def bind_args(self, tx, args, kwargs):
+        return {}
+
+    def get_globals(self):
+        return self.value.gi_frame.f_globals
 
     def can_reconstruct(self, tx):
-        # Any graph break should force the entire context manager to run on eager mode
+        # TODO: reconstruct generator object
         return False
+
+    def _get_inline_tracer(self, tx):
+        from torch._dynamo.symbolic_convert import InliningInstructionTranslator
+
+        if self.inline_tracer is None:
+            self.inline_tracer = InliningInstructionTranslator.build_inline_tracer(
+                tx, self, [], {}
+            )
+            # self.inline_tracer.instruction_pointer = self.value.gi_frame.f_lasti + 1
+            # self.accept_prefix_inst = False
+            # for name, value in self.value.gi_frame.f_locals.items():
+            #     var = variables.LazyVariableTracker.create(
+            #         value, LocalSource(name, is_input=True),
+            #     )
+            #     self.inline_tracer.symbolic_locals[name] = var
+        return self.inline_tracer
 
     def next_variable(self, tx):
         from torch._dynamo import exc
 
-        tracer = self.inline_tracer
+        tracer = self._get_inline_tracer(tx)
 
         try:
             # Hierarchically, tx can be seen as the parent of the inline tracer
             # created on call_function. Any exception needs to be propagated to tx
             # for Dynamo to behave correctly
             with patch.dict(counters, {"unimplemented": counters["inline_call"]}):
-                return tracer.inline_call_().next_variable(tx)
+                return tracer.inline_call_()
         except exc.ObservedException as e:
             tx.exn_vt_stack.extend(tracer.exn_vt_stack)
             raise e
+        except Unsupported as e:
+            if "graph_break" not in e.msg:
+                raise e
+
+            # fallback to eager
+            from torch._C._dynamo.eval_frame import skip_code
+
+            code = self.get_code()
+            skip_code(code)
+            raise exc.SkipFrame from e
+
+    def has_unpack_var_sequence(self, tx):
+        return False
+
+    def has_force_unpack_var_sequence(self, tx) -> builtins.bool:
+        return True
+
+    def force_unpack_var_sequence(self, tx) -> List[VariableTracker]:
+        result = []
+        while True:
+            try:
+                result.append(self.next_variable(tx))
+            except ObservedUserStopIteration:
+                handle_observed_exception(tx)
+                break
+        return result
+
+    def call_method(
+        self,
+        tx: "InstructionTranslator",
+        name: str,
+        args: "List[VariableTracker]",
+        kwargs: "Dict[str, VariableTracker]",
+    ) -> "VariableTracker":
+        # iter(gen) -> gen
+        if name == "__iter__":
+            return self
+        elif name == "__next__":
+            return self.next_variable(tx)
+        super().call_method(tx, name, args, kwargs)
 
 
 class UserMethodVariable(UserFunctionVariable):
